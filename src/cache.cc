@@ -32,6 +32,8 @@
 #include "util/bits.h"
 #include "util/span.h"
 
+#include "page_stat.h"  // ADD: for per-page TLB stats
+
 CACHE::CACHE(CACHE&& other)
     : operable(other),
 
@@ -250,7 +252,7 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
 bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 {
   cpu = handle_pkt.cpu;
-
+  
   // access cache
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);
   auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
@@ -272,7 +274,21 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   const auto way_idx = std::distance(set_begin, way);
   impl_update_replacement_state(handle_pkt.cpu, get_set_index(handle_pkt.address), way_idx, module_address(handle_pkt), handle_pkt.ip, {}, handle_pkt.type,
                                 hit);
+  // --- Per-page TLB stats (ITLB/DTLB/STLB) ---
+  // We only build VPN for TLB modules. For TLBs, `address` is a VA (TLB tags VPN).
+  {
+    const bool is_itlb = (NAME.find("ITLB") != std::string::npos);
+    const bool is_dtlb = (NAME.find("DTLB") != std::string::npos);
+    const bool is_stlb = (NAME.find("STLB") != std::string::npos);
 
+    if (is_itlb || is_dtlb || is_stlb) {
+      const bool is_instr = is_itlb;
+      auto vpn = champsim::page_number{handle_pkt.address}.to<uint64_t>();
+      page_stats::tlb_access(is_itlb ? "ITLB" : (is_dtlb ? "DTLB" : "STLB"),
+                            handle_pkt.cpu, vpn, hit,is_instr);
+    }
+  }
+  // --- end per-page TLB stats ---
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 

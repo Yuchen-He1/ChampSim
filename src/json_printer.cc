@@ -1,17 +1,6 @@
 /*
  *    Copyright 2023 The ChampSim Contributors
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ *    (License header unchanged)
  */
 
 #include <algorithm>
@@ -19,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "stats_printer.h"
+#include "page_stat.h"
 
 void to_json(nlohmann::json& j, const O3_CPU::stats_type& stats)
 {
@@ -109,4 +99,74 @@ void to_json(nlohmann::json& j, const champsim::phase_stats stats)
 }
 } // namespace champsim
 
-void champsim::json_printer::print(std::vector<phase_stats>& stats) { stream << nlohmann::json::array_t{std::begin(stats), std::end(stats)}; }
+void champsim::json_printer::print(std::vector<phase_stats>& stats)
+{
+  // Original per-phase output
+  nlohmann::json phases = nlohmann::json::array_t{std::begin(stats), std::end(stats)};
+
+  // Build per-page translation list (sorted)
+  nlohmann::json j_pages = nlohmann::json::array();
+
+  auto div = [](uint64_t num, uint64_t den) -> double {
+    return den ? static_cast<double>(num) / static_cast<double>(den) : 0.0;
+  };
+
+  // Pull snapshot into a vector so we can sort
+  struct Row {
+    uint32_t core;
+    uint64_t vpn;
+    bool is_instr;
+    uint64_t itlb_acc, itlb_hit;
+    uint64_t dtlb_acc, dtlb_hit;
+    uint64_t stlb_acc, stlb_hit;
+  };
+
+  std::vector<Row> rows;
+  for (const auto& kv : page_stats::snapshot()) {
+    const auto& k = kv.first;
+    const auto& c = kv.second;
+    rows.push_back(Row{k.core, k.vpn, k.is_instr, c.itlb_acc, c.itlb_hit, c.dtlb_acc, c.dtlb_hit, c.stlb_acc, c.stlb_hit});
+  }
+
+  // Sort by "hotness":
+  //   1) total TLB acc (itlb_acc + dtlb_acc) desc
+  //   2) stlb_acc desc
+  //   3) core asc
+  //   4) vpn  asc
+  std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b){
+    const auto a_tlb = a.itlb_acc + a.dtlb_acc;
+    const auto b_tlb = b.itlb_acc + b.dtlb_acc;
+    if (a_tlb != b_tlb) return a_tlb > b_tlb;
+    if (a.stlb_acc != b.stlb_acc) return a.stlb_acc > b.stlb_acc;
+    if (a.core != b.core) return a.core < b.core;
+    return a.vpn < b.vpn;
+  });
+
+  for (const auto& r : rows) {
+    const uint64_t tlb_acc_total = r.itlb_acc + r.dtlb_acc;
+    const uint64_t stlb_ptw = (r.stlb_acc >= r.stlb_hit) ? (r.stlb_acc - r.stlb_hit) : 0;
+
+    nlohmann::json row = {
+      {"core", r.core},
+      {"vpn",  r.vpn},
+      {"is_instr", r.is_instr},
+      {"itlb_hit_rate", div(r.itlb_hit, r.itlb_acc)},
+      {"dtlb_hit_rate", div(r.dtlb_hit, r.dtlb_acc)},
+      {"stlb_hit_rate", div(r.stlb_hit, r.stlb_acc)},
+      // PTW rate = PTW count / total TLB accesses (你的定义)
+      {"ptw_rate", div(stlb_ptw, tlb_acc_total)},
+      {"raw", {
+        {"itlb_acc", r.itlb_acc}, {"itlb_hit", r.itlb_hit},
+        {"dtlb_acc", r.dtlb_acc}, {"dtlb_hit", r.dtlb_hit},
+        {"stlb_acc", r.stlb_acc}, {"stlb_hit", r.stlb_hit},
+        {"stlb_ptw", stlb_ptw}
+      }}
+    };
+    j_pages.push_back(std::move(row));
+  }
+
+  nlohmann::json root;
+  root["phases"] = std::move(phases);
+  root["per_page_translation"] = std::move(j_pages);
+  stream << root;
+}
