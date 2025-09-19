@@ -153,7 +153,7 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
       {"itlb_hit_rate", div(r.itlb_hit, r.itlb_acc)},
       {"dtlb_hit_rate", div(r.dtlb_hit, r.dtlb_acc)},
       {"stlb_hit_rate", div(r.stlb_hit, r.stlb_acc)},
-      // PTW rate = PTW count / total TLB accesses (你的定义)
+      // PTW rate = PTW count / total TLB accesses
       {"ptw_rate", div(stlb_ptw, tlb_acc_total)},
       {"raw", {
         {"itlb_acc", r.itlb_acc}, {"itlb_hit", r.itlb_hit},
