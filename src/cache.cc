@@ -275,7 +275,6 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   impl_update_replacement_state(handle_pkt.cpu, get_set_index(handle_pkt.address), way_idx, module_address(handle_pkt), handle_pkt.ip, {}, handle_pkt.type,
                                 hit);
   // --- Per-page TLB stats (ITLB/DTLB/STLB) ---
-  // We only build VPN for TLB modules. For TLBs, `address` is a VA (TLB tags VPN).
   {
     const bool is_itlb = (NAME.find("ITLB") != std::string::npos);
     const bool is_dtlb = (NAME.find("DTLB") != std::string::npos);
@@ -283,7 +282,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
     if (is_itlb || is_dtlb || is_stlb) {
       const bool is_instr = is_itlb;
-      auto vpn = champsim::page_number{handle_pkt.address}.to<uint64_t>();
+      auto vpn = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
       page_stats::tlb_access(is_itlb ? "ITLB" : (is_dtlb ? "DTLB" : "STLB"),
                             handle_pkt.cpu, vpn, hit,is_instr);
     }
@@ -869,7 +868,9 @@ void CACHE::begin_phase()
 
   roi_stats = new_roi_stats;
   sim_stats = new_sim_stats;
-
+  //count only roi no warmup
+  page_stats::clear();
+  
   for (auto* ul : upper_levels) {
     channel_type::stats_type ul_new_roi_stats;
     channel_type::stats_type ul_new_sim_stats;
