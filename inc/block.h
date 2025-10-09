@@ -31,6 +31,8 @@ struct cache_block {
   champsim::address data{};
 
   uint32_t pf_metadata = 0;
+  
+  bool pinned = false; // for TLB pinning
 };
 } // namespace champsim
 

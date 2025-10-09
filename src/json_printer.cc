@@ -42,6 +42,14 @@ void to_json(nlohmann::json& j, const CACHE::stats_type& stats)
   statsmap.emplace("useful prefetch", stats.pf_useful);
   statsmap.emplace("useless prefetch", stats.pf_useless);
 
+ // ADD: pin stats (available for all caches; non-TLBs will be zeros)
+  statsmap.emplace("pin", nlohmann::json{
+    {"lines",           stats.pin_lines},
+    {"hits",            stats.pin_hits},
+    {"bypass_on_full",  stats.pin_bypass_on_full},
+    {"evicted_colder",  stats.pin_evicted_colder}
+  });
+
   uint64_t total_downstream_demands = stats.mshr_return.total();
   for (std::size_t cpu = 0; cpu < NUM_CPUS; ++cpu)
     total_downstream_demands -= stats.mshr_return.value_or(std::pair{access_type::PREFETCH, cpu}, mshr_return_value_type{});

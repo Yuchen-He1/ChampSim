@@ -120,7 +120,7 @@
     "wq_size": 32,
     "pq_size": 0,
     "mshr_size": 16,
-    "latency": 8,
+    "latency": 4,
     "max_tag_check": 1,
     "max_fill": 1,
     "prefetch_as_load": false
@@ -182,6 +182,6 @@
     "pte_page_size": 4096,
     "num_levels": 5,
     "minor_fault_penalty": 200,
-    "randomization": 1
+    "randomization": 0
   }
 }

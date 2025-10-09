@@ -9,7 +9,7 @@ Updates:
 - Keeps per-group zorder so the smallest bar is drawn on top
 
 Usage:
-  python tlb_plotter_overlay.py \
+  python3 tlb_plot_hotpage.py \
     --json /path/to/your.json \
     --csv /path/to/tlb_summary.csv \
     --out_png /path/to/tlb_overlay.png \
@@ -103,8 +103,11 @@ def process_tlb_json_overlay(
     agg.to_csv(csv_out, index=False)
 
     # Sort by total for plotting
-    agg["_total_for_sort"] = agg[METRICS].sum(axis=1)
-    agg = agg.sort_values("_total_for_sort", ascending=False)
+    # agg["_total_for_sort"] = agg[METRICS].sum(axis=1)
+    # agg = agg.sort_values("_total_for_sort", ascending=False)
+    # Sort by DTLB access (hits + misses that go to STLB/PTW)
+    agg["_sort_key"] = agg["dtlb_hit"] + agg["stlb_hit"] + agg["stlb_ptw"]
+    agg = agg.sort_values("_sort_key", ascending=False)
 
     # Select top-K for plotting
     if topk is not None and topk > 0:

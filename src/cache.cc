@@ -172,28 +172,90 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
 {
   cpu = fill_mshr.cpu;
 
-  // find victim
+  // 1) Pick a tentative victim (or empty way)
   auto [set_begin, set_end] = get_set_span(fill_mshr.address);
   auto way = std::find_if_not(set_begin, set_end, [](auto x) { return x.valid; });
   if (way == set_end) {
-    way = std::next(set_begin, impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip,
-                                                fill_mshr.address, fill_mshr.type));
+    way = std::next(set_begin, impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id,
+                                                get_set_index(fill_mshr.address), &*set_begin,
+                                                fill_mshr.ip, fill_mshr.address, fill_mshr.type));
   }
+
+  // NOTE: DO NOT compute way_idx yet (Oracle pin below may change `way`)
   assert(set_begin <= way);
   assert(way <= set_end);
-  assert(way != set_end || fill_mshr.type != access_type::WRITE); // Writes may not bypass
-  const auto way_idx = std::distance(set_begin, way);             // cast protected by earlier assertion
+  assert(way != set_end || fill_mshr.type != access_type::WRITE); // writes may not bypass
 
   if constexpr (champsim::debug_print) {
-    fmt::print("[{}] {} instr_id: {} address: {} v_address: {} set: {} way: {} type: {} prefetch_metadata: {} cycle_enqueued: {} cycle: {}\n", NAME, __func__,
-               fill_mshr.instr_id, fill_mshr.address, fill_mshr.v_address, get_set_index(fill_mshr.address), way_idx,
-               access_type_names.at(champsim::to_underlying(fill_mshr.type)), fill_mshr.data_promise->pf_metadata,
-               (fill_mshr.time_enqueued.time_since_epoch()) / clock_period, (current_time.time_since_epoch()) / clock_period);
+    // Will re-compute way_idx later to reflect the final victim
+    fmt::print("[{}] {} instr_id:{} address:{} v_address:{} set:{} type:{} pfmeta:{} cycle_enq:{} cycle:{}\n",
+               NAME, __func__, fill_mshr.instr_id, fill_mshr.address, fill_mshr.v_address,
+               get_set_index(fill_mshr.address),
+               access_type_names.at(champsim::to_underlying(fill_mshr.type)),
+               fill_mshr.data_promise->pf_metadata,
+               (fill_mshr.time_enqueued.time_since_epoch()) / clock_period,
+               (current_time.time_since_epoch()) / clock_period);
   }
 
+  // 2) Oracle pin decision for STLB (data-only) MUST happen BEFORE any eviction/writeback
+  if (is_stlb()) {
+    const uint64_t vpn = champsim::page_number{fill_mshr.v_address}.to<uint64_t>();
+    auto itH = oracle_heat.find(vpn);
+    const bool is_hot = (itH != oracle_heat.end()) && (oracle_hot.count(vpn) != 0);
+
+    if (is_hot) {
+      const uint64_t new_heat = itH->second;
+      const long set_idx = get_set_index(fill_mshr.address);
+
+      const bool set_full    = (pin_quota_per_set && pinned_per_set[set_idx] >= pin_quota_per_set);
+      const bool global_full = (pin_quota_global  && pinned_global          >= pin_quota_global);
+
+      if (set_full || global_full) {
+        // find the coldest pinned line in this set
+        auto [sb, se] = get_set_span(fill_mshr.address);
+        auto coldest = se;
+        uint64_t coldest_heat = std::numeric_limits<uint64_t>::max();
+
+        for (auto it = sb; it != se; ++it) if (it->valid && it->pinned) {
+          const uint64_t old_vpn = champsim::page_number{it->v_address}.to<uint64_t>();
+          uint64_t h = 0;
+          if (auto j = oracle_heat.find(old_vpn); j != oracle_heat.end()) h = j->second; // no entry -> heat=0
+          if (h < coldest_heat) { coldest_heat = h; coldest = it; }
+        }
+
+        const bool can_replace_pinned = (coldest != se) && (new_heat > coldest_heat);
+
+        if (can_replace_pinned) {
+          // override victim to the coldest pinned line
+          // IMPORTANT: decrement pin counters now; we will re-increment after fill
+          if (coldest->pinned) {
+            if (pinned_per_set[set_idx] > 0) --pinned_per_set[set_idx];
+            if (pinned_global > 0)           --pinned_global;
+          }
+          way = coldest; // victim becomes the coldest pinned
+          ++sim_stats.pin_evicted_colder;
+        } else if (bypass_when_set_full) {
+          // Not hot enough to displace a pinned line -> bypass this level
+          ++sim_stats.pin_bypass_on_full;
+
+          if (fill_mshr.type != access_type::PREFETCH)
+            sim_stats.total_miss_latency_cycles += (current_time - (fill_mshr.time_enqueued + clock_period)) / clock_period;
+          sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
+
+          response_type rsp{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data,
+                            /*metadata*/0, fill_mshr.instr_depend_on_me};
+          for (auto* ret : fill_mshr.to_return) ret->push_back(rsp);
+          return true; // bypass STLB fill
+        }
+        // Else: keep the original `way` chosen by replacement (which should have skipped pinned)
+      }
+      // If quota not full: we will mark the filled line as pinned after we install it
+    }
+  }
+
+  // 3) Only now: with the FINAL `way`, handle writeback if needed
   if (way != set_end && way->valid && way->dirty) {
     request_type writeback_packet;
-
     writeback_packet.cpu = fill_mshr.cpu;
     writeback_packet.address = way->address;
     writeback_packet.data = way->data;
@@ -204,50 +266,70 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
     writeback_packet.response_requested = false;
 
     if constexpr (champsim::debug_print) {
-      fmt::print("[{}] {} evict address: {} v_address: {} prefetch_metadata: {}\n", NAME, __func__, writeback_packet.address, writeback_packet.v_address,
+      fmt::print("[{}] {} evict address:{} v_address:{} prefetch_metadata:{}\n",
+                 NAME, __func__, writeback_packet.address, writeback_packet.v_address,
                  fill_mshr.data_promise->pf_metadata);
     }
 
-    auto success = lower_level->add_wq(writeback_packet);
-    if (!success) {
-      return false;
+    if (!lower_level->add_wq(writeback_packet)) {
+      return false; // cannot writeback now
     }
   }
 
+  // 4) Compute evicting address and notify modules
   champsim::address evicting_address{};
   if (way != set_end && way->valid) {
     evicting_address = module_address(*way);
   }
 
-  auto metadata_thru = impl_prefetcher_cache_fill(module_address(fill_mshr), get_set_index(fill_mshr.address), way_idx,
-                                                  (fill_mshr.type == access_type::PREFETCH), evicting_address, fill_mshr.data_promise->pf_metadata);
-  impl_replacement_cache_fill(fill_mshr.cpu, get_set_index(fill_mshr.address), way_idx, module_address(fill_mshr), fill_mshr.ip, evicting_address,
+  // Recompute way_idx NOW that `way` is final
+  const auto way_idx = std::distance(set_begin, way);
+
+  auto metadata_thru = impl_prefetcher_cache_fill(module_address(fill_mshr),
+                                                  get_set_index(fill_mshr.address),
+                                                  way_idx,
+                                                  (fill_mshr.type == access_type::PREFETCH),
+                                                  evicting_address,
+                                                  fill_mshr.data_promise->pf_metadata);
+  impl_replacement_cache_fill(fill_mshr.cpu,
+                              get_set_index(fill_mshr.address),
+                              way_idx,
+                              module_address(fill_mshr),
+                              fill_mshr.ip,
+                              evicting_address,
                               fill_mshr.type);
 
+  // 5) Install the block and, if hot (data-only), mark pinned and update counters
   if (way != set_end) {
-    if (way->valid && way->prefetch) {
-      ++sim_stats.pf_useless;
-    }
-
-    if (fill_mshr.type == access_type::PREFETCH) {
-      ++sim_stats.pf_fill;
-    }
+    if (way->valid && way->prefetch) ++sim_stats.pf_useless;
+    if (fill_mshr.type == access_type::PREFETCH) ++sim_stats.pf_fill;
 
     *way = fill_block(fill_mshr, metadata_thru);
+
+    if (is_stlb()) {
+      const uint64_t vpn = champsim::page_number{fill_mshr.v_address}.to<uint64_t>();
+      if (oracle_hot.count(vpn)) {
+        if (!way->pinned) {
+          way->pinned = true;
+          ++pinned_per_set[get_set_index(fill_mshr.address)];
+          ++pinned_global;
+          ++sim_stats.pin_lines;
+        }
+      }
+    }
   }
 
-  // COLLECT STATS
+  // 6) Complete stats and return response
   if (fill_mshr.type != access_type::PREFETCH)
     sim_stats.total_miss_latency_cycles += (current_time - (fill_mshr.time_enqueued + clock_period)) / clock_period;
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
   response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me};
-  for (auto* ret : fill_mshr.to_return) {
-    ret->push_back(response);
-  }
+  for (auto* ret : fill_mshr.to_return) ret->push_back(response);
 
   return true;
 }
+
 
 bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 {
@@ -289,6 +371,9 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   }
   // --- end per-page TLB stats ---
   if (hit) {
+
+    if (way->pinned) ++sim_stats.pin_hits;// ADD: pin hit stat
+
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
     response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
@@ -856,6 +941,10 @@ void CACHE::initialize()
 {
   impl_prefetcher_initialize();
   impl_initialize_replacement();
+  if (is_stlb()) {
+    if (pinned_per_set.empty()) pinned_per_set.assign(NUM_SET, 0);
+    load_oracle_csv_build_hot(); // read csv -> get hot page set
+  }
 }
 
 void CACHE::begin_phase()
@@ -894,6 +983,12 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.pf_useful = sim_stats.pf_useful;
   roi_stats.pf_useless = sim_stats.pf_useless;
   roi_stats.pf_fill = sim_stats.pf_fill;
+
+  // ADD: pin stats into ROI
+  roi_stats.pin_lines = sim_stats.pin_lines;
+  roi_stats.pin_hits = sim_stats.pin_hits;
+  roi_stats.pin_bypass_on_full = sim_stats.pin_bypass_on_full;
+  roi_stats.pin_evicted_colder = sim_stats.pin_evicted_colder;
 
   for (auto* ul : upper_levels) {
     ul->roi_stats.RQ_ACCESS = ul->sim_stats.RQ_ACCESS;
@@ -951,3 +1046,58 @@ void CACHE::print_deadlock()
   }
 }
 // LCOV_EXCL_STOP
+
+
+#include <fstream>
+#include <sstream>
+#include <cstdlib>
+
+void CACHE::load_oracle_csv_build_hot()
+{
+  if (!is_stlb()) return;
+
+  // env var
+  std::string path = std::getenv("CHAMPSIM_HOT_PAGES_CSV") ? std::getenv("CHAMPSIM_HOT_PAGES_CSV") : "hot_pages.csv";
+  if (const char* p = std::getenv("PIN_WD")) W_D = std::strtoull(p, nullptr, 10);
+  if (const char* p = std::getenv("PIN_WS")) W_S = std::strtoull(p, nullptr, 10);
+  if (const char* p = std::getenv("PIN_WP")) W_P = std::strtoull(p, nullptr, 10);
+  if (const char* p = std::getenv("PIN_THRESH")) pin_thresh = std::strtoull(p, nullptr, 10);
+  if (const char* p = std::getenv("PIN_PER_SET")) pin_quota_per_set = std::atoi(p);
+  if (const char* p = std::getenv("PIN_GLOBAL_BUDGET")) pin_quota_global = std::atoi(p);
+  if (const char* p = std::getenv("PIN_BYPASS_ON_FULL")) bypass_when_set_full = (std::atoi(p)!=0);
+
+  std::ifstream fin(path);
+  if (!fin) {
+    fmt::print(stderr, "[{}] warn: cannot open CSV: {}\n", NAME, path);
+    return;
+  }
+
+  oracle_heat.clear();
+  oracle_hot.clear();
+
+  // read table head：vpn,itlb_hit,dtlb_hit,stlb_hit,stlb_ptw
+  std::string header;
+  std::getline(fin, header);
+
+  std::string line;
+  while (std::getline(fin, line)) {
+    if (line.empty()) continue;
+    std::stringstream ss(line);
+    std::string tok;
+    uint64_t vpn=0, itlb=0, dtlb=0, stlb=0, ptw=0;
+
+    std::getline(ss, tok, ','); vpn  = std::stoull(tok, nullptr, 10);
+    std::getline(ss, tok, ','); itlb = std::stoull(tok, nullptr, 10); // ignore itlb
+    std::getline(ss, tok, ','); dtlb = std::stoull(tok, nullptr, 10);
+    std::getline(ss, tok, ','); stlb = std::stoull(tok, nullptr, 10);
+    std::getline(ss, tok, ','); ptw  = std::stoull(tok, nullptr, 10);
+
+    uint64_t heat = W_D*dtlb + W_S*stlb + W_P*ptw; // data-only
+    oracle_heat[vpn] = heat;
+    if (heat > pin_thresh) oracle_hot.insert(vpn); // get hot page
+  }
+
+  fmt::print("[{}] Oracle CSV loaded rows={}, hot(vpn)={}, thresh={}, weights(D,S,P)={},{},{}; per_set={}, global={}, bypass={}\n",
+             NAME, oracle_heat.size(), oracle_hot.size(), pin_thresh, W_D, W_S, W_P,
+             pin_quota_per_set, pin_quota_global, bypass_when_set_full);
+}
