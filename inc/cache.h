@@ -96,7 +96,9 @@ class CACHE : public champsim::operable
 
   // each set max pin number & global max pin number & bypass policy
   uint32_t pin_quota_per_set = 2;
-  uint32_t pin_quota_global  = 384;
+
+  uint32_t pin_quota_global  = 256; // need to change each time configure the processor json file 
+  
   bool     bypass_when_set_full = true;
 
   // runtime stat
