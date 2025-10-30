@@ -24,13 +24,6 @@ struct cache_stats {
   champsim::stats::event_counter<std::pair<access_type, std::remove_cv_t<decltype(NUM_CPUS)>>> mshr_return = {};
 
   long total_miss_latency_cycles{};
-
-
-  // --- ADD: pin-related stats (only meaningful for TLBs; we在STLB填) ---
-  uint64_t pin_lines = 0;             // number of pinned lines
-  uint64_t pin_hits = 0;              // hit pinned lines
-  uint64_t pin_bypass_on_full = 0;    // when pin number full, bypass colder page
-  uint64_t pin_evicted_colder = 0;    // evicted colder hot page 
 };
 
 cache_stats operator-(cache_stats lhs, cache_stats rhs);

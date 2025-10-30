@@ -42,14 +42,6 @@ void to_json(nlohmann::json& j, const CACHE::stats_type& stats)
   statsmap.emplace("useful prefetch", stats.pf_useful);
   statsmap.emplace("useless prefetch", stats.pf_useless);
 
- // ADD: pin stats (available for all caches; non-TLBs will be zeros)
-  statsmap.emplace("pin", nlohmann::json{
-    {"lines",           stats.pin_lines},
-    {"hits",            stats.pin_hits},
-    {"bypass_on_full",  stats.pin_bypass_on_full},
-    {"evicted_colder",  stats.pin_evicted_colder}
-  });
-
   uint64_t total_downstream_demands = stats.mshr_return.total();
   for (std::size_t cpu = 0; cpu < NUM_CPUS; ++cpu)
     total_downstream_demands -= stats.mshr_return.value_or(std::pair{access_type::PREFETCH, cpu}, mshr_return_value_type{});
@@ -127,20 +119,18 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
     uint64_t itlb_acc, itlb_hit;
     uint64_t dtlb_acc, dtlb_hit;
     uint64_t stlb_acc, stlb_hit;
-    uint64_t l3tlb_acc, l3tlb_hit;
   };
 
   std::vector<Row> rows;
   for (const auto& kv : page_stats::snapshot()) {
     const auto& k = kv.first;
     const auto& c = kv.second;
-    rows.push_back(Row{k.core, k.vpn, k.is_instr, c.itlb_acc, c.itlb_hit, c.dtlb_acc, c.dtlb_hit, c.stlb_acc, c.stlb_hit, c.l3tlb_acc, c.l3tlb_hit});
+    rows.push_back(Row{k.core, k.vpn, k.is_instr, c.itlb_acc, c.itlb_hit, c.dtlb_acc, c.dtlb_hit, c.stlb_acc, c.stlb_hit});
   }
 
   // Sort by "hotness":
   //   1) total TLB acc (itlb_acc + dtlb_acc) desc
   //   2) stlb_acc desc
-  //   3) l3tlb_acc desc
   //   3) core asc
   //   4) vpn  asc
   std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b){
@@ -148,7 +138,6 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
     const auto b_tlb = b.itlb_acc + b.dtlb_acc;
     if (a_tlb != b_tlb) return a_tlb > b_tlb;
     if (a.stlb_acc != b.stlb_acc) return a.stlb_acc > b.stlb_acc;
-    if (a.l3tlb_acc != b.l3tlb_acc) return a.l3tlb_acc > b.l3tlb_acc;
     if (a.core != b.core) return a.core < b.core;
     return a.vpn < b.vpn;
   });
@@ -156,7 +145,6 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
   for (const auto& r : rows) {
     const uint64_t tlb_acc_total = r.itlb_acc + r.dtlb_acc;
     const uint64_t stlb_ptw = (r.stlb_acc >= r.stlb_hit) ? (r.stlb_acc - r.stlb_hit) : 0;
-    const uint64_t l3tlb_ptw = (r.l3tlb_acc >= r.l3tlb_hit) ? (r.l3tlb_acc - r.l3tlb_hit) : 0;
 
     nlohmann::json row = {
       {"core", r.core},
@@ -165,16 +153,13 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
       {"itlb_hit_rate", div(r.itlb_hit, r.itlb_acc)},
       {"dtlb_hit_rate", div(r.dtlb_hit, r.dtlb_acc)},
       {"stlb_hit_rate", div(r.stlb_hit, r.stlb_acc)},
-      {"l3tlb_hit_rate", div(r.l3tlb_hit, r.l3tlb_acc)},
-      // PTW rate = L3TLB misses / total front-end TLB accesses
-      {"ptw_rate", div(l3tlb_ptw, tlb_acc_total)},
+      // PTW rate = PTW count / total TLB accesses
+      {"ptw_rate", div(stlb_ptw, tlb_acc_total)},
       {"raw", {
         {"itlb_acc", r.itlb_acc}, {"itlb_hit", r.itlb_hit},
         {"dtlb_acc", r.dtlb_acc}, {"dtlb_hit", r.dtlb_hit},
         {"stlb_acc", r.stlb_acc}, {"stlb_hit", r.stlb_hit},
-        {"stlb_ptw", stlb_ptw},
-        {"l3tlb_acc", r.l3tlb_acc}, {"l3tlb_hit", r.l3tlb_hit},
-        {"l3tlb_ptw", l3tlb_ptw}
+        {"stlb_ptw", stlb_ptw}
       }}
     };
     j_pages.push_back(std::move(row));

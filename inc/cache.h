@@ -33,8 +33,6 @@
 #include <string>
 #include <type_traits>
 #include <vector>
-#include <unordered_map>
-#include <unordered_set>
 
 #include "address.h"
 #include "bandwidth.h"
@@ -85,31 +83,7 @@ class CACHE : public champsim::operable
     explicit tag_lookup_type(request_type req) : tag_lookup_type(req, false, false) {}
     tag_lookup_type(const request_type& req, bool local_pref, bool skip);
   };
-  // --- Oracle 
-  std::unordered_map<uint64_t, uint64_t> oracle_heat; // vpn -> heat（
-  std::unordered_set<uint64_t> oracle_hot;            // hot page（data-only）
 
-
-  uint64_t pin_thresh = 1000;     // threshold
-  uint64_t W_D = 1, W_S = 1, W_P = 1;  // heat = W_D*dtlb + W_S*stlb + W_P*ptw
-                                  
-
-  // each set max pin number & global max pin number & bypass policy
-  uint32_t pin_quota_per_set = 2;
-
-  uint32_t pin_quota_global  = 256; // need to change each time configure the processor json file 
-  
-  bool     bypass_when_set_full = true;
-
-  // runtime stat
-  std::vector<uint32_t> pinned_per_set; // size=NUM_SET
-  uint32_t pinned_global = 0;
-
-  // 工具
-  void load_oracle_csv_build_hot(); // 读 CSV 并按阈值构建 oracle_heat + oracle_hot
-  bool is_tlb_level() const { return NAME.find("TLB") != std::string::npos; }
-  bool is_stlb()      const { return NAME.find("STLB") != std::string::npos; }
-  bool is_itlb()      const { return NAME.find("ITLB") != std::string::npos; } // 供防护
 public:
   struct mshr_type {
     champsim::address address;
