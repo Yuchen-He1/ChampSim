@@ -18,7 +18,7 @@ If you use ChampSim in your work, you may submit a pull request modifying `PUBLI
 # Download dependencies
 
 ChampSim uses [vcpkg](https://vcpkg.io) to manage its dependencies. In this repository, vcpkg is included as a submodule. You can download the dependencies with
-```
+```  
 git submodule update --init
 vcpkg/bootstrap-vcpkg.sh
 vcpkg/vcpkg install

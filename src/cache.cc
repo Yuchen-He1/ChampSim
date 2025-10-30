@@ -361,11 +361,12 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
     const bool is_itlb = (NAME.find("ITLB") != std::string::npos);
     const bool is_dtlb = (NAME.find("DTLB") != std::string::npos);
     const bool is_stlb = (NAME.find("STLB") != std::string::npos);
+    const bool is_l3tlb = (NAME.find("L3TLB") != std::string::npos);
 
-    if (is_itlb || is_dtlb || is_stlb) {
+    if (is_itlb || is_dtlb || is_stlb || is_l3tlb) {
       const bool is_instr = is_itlb;
       auto vpn = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
-      page_stats::tlb_access(is_itlb ? "ITLB" : (is_dtlb ? "DTLB" : "STLB"),
+      page_stats::tlb_access(is_itlb ? "ITLB" : (is_dtlb ? "DTLB" : (is_stlb ? "STLB" : "L3TLB")),
                             handle_pkt.cpu, vpn, hit,is_instr);
     }
   }

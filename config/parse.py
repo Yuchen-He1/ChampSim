@@ -121,7 +121,7 @@ def int_or_prefixed_size(val):
 
 def core_default_names(cpu):
     """ Apply defaults to a cpu with the given index """
-    default_element_names = {n: f'{cpu["name"]}_{n}' for n in ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB', 'PTW')}
+    default_element_names = {n: f'{cpu["name"]}_{n}' for n in ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB', 'L3TLB', 'PTW')}
     default_core = {
         'frequency' : 4000,
         'DIB': {},
@@ -242,7 +242,7 @@ class NormalizedConfiguration:
         if verbose:
             print('P: core count', len(self.cores))
 
-        pinned_cache_names = ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB')
+        pinned_cache_names = ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB', 'L3TLB')
         self.caches = util.combine_named(
             config_file.get('caches', []),
             (extract_element(name, core, config_file) for core, name in itertools.product(self.cores, pinned_cache_names))

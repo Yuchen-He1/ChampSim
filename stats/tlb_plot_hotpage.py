@@ -27,7 +27,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-METRICS = ["itlb_hit", "dtlb_hit", "stlb_hit", "stlb_ptw"]  # from raw.*
+METRICS = ["itlb_hit", "dtlb_hit", "stlb_hit", "stlb_ptw", "l3tlb_hit", "l3tlb_ptw"]  # from raw.*
 
 
 def _load_per_page_records(json_path: str) -> List[Dict[str, Any]]:
@@ -105,8 +105,8 @@ def process_tlb_json_overlay(
     # Sort by total for plotting
     # agg["_total_for_sort"] = agg[METRICS].sum(axis=1)
     # agg = agg.sort_values("_total_for_sort", ascending=False)
-    # Sort by DTLB access (hits + misses that go to STLB/PTW)
-    agg["_sort_key"] = agg["dtlb_hit"] + agg["stlb_hit"] + agg["stlb_ptw"]
+    # Sort by downstream translation demand (DTLB hits + STLB/L3TLB misses)
+    agg["_sort_key"] = agg["dtlb_hit"] + agg["stlb_hit"] + agg["stlb_ptw"] + agg["l3tlb_hit"] + agg["l3tlb_ptw"]
     agg = agg.sort_values("_sort_key", ascending=False)
 
     # Select top-K for plotting

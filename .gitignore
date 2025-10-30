@@ -35,3 +35,8 @@ traces/
 
 stats/venv
 stats/*.json
+
+stats/*.png
+stats/*.csv
+stats/png/
+stats/csv/

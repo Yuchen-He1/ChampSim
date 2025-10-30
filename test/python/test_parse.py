@@ -332,7 +332,7 @@ class NormalizeConfigTest(unittest.TestCase):
         self.assertEqual(result.vmem, {})
 
     def test_caches_in_root_are_moved_to_cache_array(self):
-        for name in ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB'):
+        for name in ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB', 'L3TLB'):
             with self.subTest(cache_name=name):
                 test_config = {
                         name: {
@@ -355,7 +355,7 @@ class NormalizeConfigTest(unittest.TestCase):
         self.assertEqual(result.ptws[result.cores[0]['PTW']].get('__test__'), True)
 
     def test_caches_in_cores_are_moved_to_cache_array(self):
-        for name in ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB'):
+        for name in ('L1I', 'L1D', 'ITLB', 'DTLB', 'L2C', 'STLB', 'L3TLB'):
             with self.subTest(cache_name=name):
                 test_config = {
                         'ooo_cpu': [{name: {

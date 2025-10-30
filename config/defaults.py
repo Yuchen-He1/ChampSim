@@ -23,7 +23,8 @@ def cache_core_defaults(cpu):
     yield { 'name': cpu.get('ITLB'), 'lower_level': cpu.get('STLB') }
     yield { 'name': cpu.get('DTLB'), 'lower_level': cpu.get('STLB') }
     yield { 'name': cpu.get('L2C'), 'lower_level': 'LLC' }
-    yield { 'name': cpu.get('STLB'), 'lower_level': cpu.get('PTW') }
+    yield { 'name': cpu.get('STLB'), 'lower_level': cpu.get('L3TLB') }
+    yield { 'name': cpu.get('L3TLB'), 'lower_level': cpu.get('PTW') }
 
 def ptw_core_defaults(cpu):
     ''' Generate the lower levels that a default core would expect for each of its PTWs '''
@@ -51,12 +52,14 @@ def list_defaults_for_core(cpu, caches):
 
     itlb_members = (
         { '_first_level': True, '_defaults': 'champsim::defaults::default_itlb', '_queue_factor': 16 },
-        { '_defaults': 'champsim::defaults::default_stlb', '_queue_factor': 16 }
+        { '_defaults': 'champsim::defaults::default_stlb', '_queue_factor': 16 },
+        { '_defaults': 'champsim::defaults::default_l3tlb', '_queue_factor': 16 }
     )
 
     dtlb_members = (
         { '_first_level': True, '_defaults': 'champsim::defaults::default_dtlb', '_queue_factor': 16 },
-        { '_defaults': 'champsim::defaults::default_stlb', '_queue_factor': 16 }
+        { '_defaults': 'champsim::defaults::default_stlb', '_queue_factor': 16 },
+        { '_defaults': 'champsim::defaults::default_l3tlb', '_queue_factor': 16 }
     )
 
     def connect_translator(cache, tlb):

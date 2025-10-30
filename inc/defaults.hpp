@@ -119,6 +119,16 @@ const auto default_stlb = champsim::cache_builder<champsim::cache_builder_module
                               .reset_wq_checks_full_addr()
                               .prefetch_activate(access_type::LOAD, access_type::PREFETCH);
 
+const auto default_l3tlb = champsim::cache_builder<champsim::cache_builder_module_type_holder<no>, champsim::cache_builder_module_type_holder<lru>>{}
+                               .sets_factor(256)
+                               .ways(16)
+                               .pq_size(0)
+                               .offset_bits(champsim::data::bits{LOG2_PAGE_SIZE})
+                               .reset_prefetch_as_load()
+                               .reset_virtual_prefetch()
+                               .reset_wq_checks_full_addr()
+                               .prefetch_activate(access_type::LOAD, access_type::PREFETCH);
+
 const auto default_llc = champsim::cache_builder<champsim::cache_builder_module_type_holder<no>, champsim::cache_builder_module_type_holder<lru>>{}
                              .name("LLC")
                              .sets_factor(2048)

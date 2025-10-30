@@ -11,7 +11,7 @@ namespace page_stats {
 struct key {
   uint32_t core{};
   uint64_t vpn{};
-  bool is_instr{}; // true = ITLB page, false = DTLB/STLB page
+  bool is_instr{}; // true = ITLB page, false = DTLB/STLB/L3TLB page
 
   // map key ordering
   bool operator<(const key& rhs) const {
@@ -25,10 +25,11 @@ struct counters {
   uint64_t itlb_acc{0}, itlb_hit{0};
   uint64_t dtlb_acc{0}, dtlb_hit{0};
   uint64_t stlb_acc{0}, stlb_hit{0};
+  uint64_t l3tlb_acc{0}, l3tlb_hit{0};
 };
 
 // Record an access for TLB or STLB.
-// which: "ITLB" | "DTLB" | "STLB"
+// which: "ITLB" | "DTLB" | "STLB" | "L3TLB"
 // core: CPU id
 // vpn:  virtual page number
 // is_hit: whether it hit at that level

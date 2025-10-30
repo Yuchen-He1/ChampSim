@@ -20,6 +20,9 @@ void tlb_access(const char* which, uint32_t core, uint64_t vpn, bool is_hit, boo
   } else if (w == "STLB") {
     ++c.stlb_acc;
     if (is_hit) ++c.stlb_hit;
+  } else if (w == "L3TLB") {
+    ++c.l3tlb_acc;
+    if (is_hit) ++c.l3tlb_hit;
   }
 }
 
