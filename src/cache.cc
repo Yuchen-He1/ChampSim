@@ -958,6 +958,16 @@ void CACHE::begin_phase()
   roi_stats = new_roi_stats;
   sim_stats = new_sim_stats;
   //count only roi no warmup
+  if (!warmup && is_stlb()) {
+    if (!pinned_per_set.empty()) {
+      std::fill(std::begin(pinned_per_set), std::end(pinned_per_set), 0);
+    }
+    pinned_global = 0;
+    for (auto& line : block) {
+      line.pinned = false;
+    }
+  }
+
   page_stats::clear();
   
   for (auto* ul : upper_levels) {
