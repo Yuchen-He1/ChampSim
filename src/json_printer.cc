@@ -119,13 +119,24 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
     uint64_t itlb_acc, itlb_hit;
     uint64_t dtlb_acc, dtlb_hit;
     uint64_t stlb_acc, stlb_hit;
+    uint64_t l3tlb_acc, l3tlb_hit;
   };
 
   std::vector<Row> rows;
   for (const auto& kv : page_stats::snapshot()) {
     const auto& k = kv.first;
     const auto& c = kv.second;
-    rows.push_back(Row{k.core, k.vpn, k.is_instr, c.itlb_acc, c.itlb_hit, c.dtlb_acc, c.dtlb_hit, c.stlb_acc, c.stlb_hit});
+    rows.push_back(Row{k.core,
+                       k.vpn,
+                       k.is_instr,
+                       c.itlb_acc,
+                       c.itlb_hit,
+                       c.dtlb_acc,
+                       c.dtlb_hit,
+                       c.stlb_acc,
+                       c.stlb_hit,
+                       c.l3tlb_acc,
+                       c.l3tlb_hit});
   }
 
   // Sort by "hotness":
@@ -144,7 +155,8 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
 
   for (const auto& r : rows) {
     const uint64_t tlb_acc_total = r.itlb_acc + r.dtlb_acc;
-    const uint64_t stlb_ptw = (r.stlb_acc >= r.stlb_hit) ? (r.stlb_acc - r.stlb_hit) : 0;
+    const uint64_t stlb_miss = (r.stlb_acc >= r.stlb_hit) ? (r.stlb_acc - r.stlb_hit) : 0;
+    const uint64_t l3tlb_miss = (r.l3tlb_acc >= r.l3tlb_hit) ? (r.l3tlb_acc - r.l3tlb_hit) : 0;
 
     nlohmann::json row = {
       {"core", r.core},
@@ -153,13 +165,16 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
       {"itlb_hit_rate", div(r.itlb_hit, r.itlb_acc)},
       {"dtlb_hit_rate", div(r.dtlb_hit, r.dtlb_acc)},
       {"stlb_hit_rate", div(r.stlb_hit, r.stlb_acc)},
+      {"l3tlb_hit_rate", div(r.l3tlb_hit, r.l3tlb_acc)},
       // PTW rate = PTW count / total TLB accesses
-      {"ptw_rate", div(stlb_ptw, tlb_acc_total)},
+      {"ptw_rate", div(stlb_miss, tlb_acc_total)},
       {"raw", {
         {"itlb_acc", r.itlb_acc}, {"itlb_hit", r.itlb_hit},
         {"dtlb_acc", r.dtlb_acc}, {"dtlb_hit", r.dtlb_hit},
         {"stlb_acc", r.stlb_acc}, {"stlb_hit", r.stlb_hit},
-        {"stlb_ptw", stlb_ptw}
+        {"stlb_miss", stlb_miss},
+        {"l3tlb_acc", r.l3tlb_acc}, {"l3tlb_hit", r.l3tlb_hit},
+        {"l3tlb_miss", l3tlb_miss}
       }}
     };
     j_pages.push_back(std::move(row));
