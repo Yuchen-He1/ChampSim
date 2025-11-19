@@ -94,7 +94,7 @@ def main() -> None:
         print("No pages met the hot-page threshold.")
         return
 
-    hot_candidates.sort(key=lambda r: (r["access_num"], r["ptw"]), reverse=True)
+    hot_candidates.sort(key=lambda r: r["ptw"], reverse=True)
     topn = max(args.topn, 0)
     if topn == 0:
         print("topn was 0; no hot pages to report.")
