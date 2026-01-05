@@ -39,3 +39,4 @@ stats/*.png
 stats/*.csv
 stats/png/*.png
 stats/csv/*.csv
+stats/log/*
