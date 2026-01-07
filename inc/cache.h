@@ -32,6 +32,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include "address.h"
@@ -113,6 +114,9 @@ public:
   };
 
 private:
+  static constexpr std::size_t DEFAULT_STLB_VICTIM_CAPACITY = 4096;
+  static constexpr std::size_t DEFAULT_STLB_HOTNESS_RESET_CYCLES = 0;
+
   bool try_hit(const tag_lookup_type& handle_pkt);
   bool handle_fill(const mshr_type& fill_mshr);
   bool handle_miss(const tag_lookup_type& handle_pkt);
@@ -121,6 +125,11 @@ private:
   void finish_translation(const response_type& packet);
 
   void issue_translation(tag_lookup_type& q_entry) const;
+  void maybe_reset_stlb_hotness();
+  uint64_t touch_stlb_hotness(champsim::address v_address);
+  uint64_t stlb_hotness_for_vpn(uint64_t vpn) const;
+  bool stlb_victim_lookup(const tag_lookup_type& handle_pkt);
+  void stlb_victim_insert(const champsim::cache_block& evicted);
 
 public:
   using BLOCK = champsim::cache_block;
@@ -148,6 +157,19 @@ private:
   std::deque<tag_lookup_type> internal_PQ{};
   std::deque<tag_lookup_type> inflight_tag_check{};
   std::deque<tag_lookup_type> translation_stash{};
+  struct stlb_victim_entry { // HSP buffer entry for STLB evictions
+    bool valid = false;
+    champsim::address address{};
+    champsim::address v_address{};
+    champsim::address data{};
+    uint32_t pf_metadata = 0;
+    uint64_t hotness = 0;
+  };
+  std::vector<stlb_victim_entry> stlb_victim_cache{};
+  std::unordered_map<uint64_t, uint64_t> stlb_page_hotness{};
+  std::size_t stlb_victim_capacity = 0;
+  std::size_t stlb_hotness_reset_cycles = 0;
+  uint64_t stlb_last_hotness_reset = 0;
 
 public:
   std::vector<channel_type*> upper_levels;
@@ -167,6 +189,9 @@ public:
   bool match_offset_bits;
   bool virtual_prefetch;
   std::vector<access_type> pref_activate_mask;
+  bool is_itlb_cache = false;
+  bool is_dtlb_cache = false;
+  bool is_stlb_cache = false;
 
   using stats_type = cache_stats;
 
@@ -317,12 +342,20 @@ public:
 
   template <typename... Ps, typename... Rs>
   explicit CACHE(champsim::cache_builder<champsim::cache_builder_module_type_holder<Ps...>, champsim::cache_builder_module_type_holder<Rs...>> b)
-      : champsim::operable(b.m_clock_period), upper_levels(b.m_uls), lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()),
-        NUM_WAY(b.get_num_ways()), MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
+      : champsim::operable(b.m_clock_period),
+        stlb_victim_capacity((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_VICTIM_CAPACITY : 0),
+        stlb_hotness_reset_cycles((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_HOTNESS_RESET_CYCLES : 0),
+        upper_levels(b.m_uls), lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()), NUM_WAY(b.get_num_ways()),
+        MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
         FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()),
         prefetch_as_load(b.m_pref_load), match_offset_bits(b.m_wq_full_addr), virtual_prefetch(b.m_va_pref), pref_activate_mask(b.m_pref_act_mask),
+        is_itlb_cache(b.m_name.find("ITLB") != std::string::npos), is_dtlb_cache(b.m_name.find("DTLB") != std::string::npos),
+        is_stlb_cache(b.m_name.find("STLB") != std::string::npos),
         pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)), repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))
   {
+    if (stlb_victim_capacity > 0) {
+      stlb_victim_cache.resize(stlb_victim_capacity);
+    }
   }
 
   CACHE(const CACHE&) = delete;

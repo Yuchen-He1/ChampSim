@@ -1,6 +1,6 @@
 import json
 
-with open("g22bfs_1.json") as f:
+with open("g22bfs_vc_1.json") as f:
     data = json.load(f)
 
 # ==========  per_page_translation  ==========

@@ -33,6 +33,7 @@ compile_commands.json
 
 traces/
 
+stats/venv_new  
 stats/venv
 stats/*.json
 stats/*.png

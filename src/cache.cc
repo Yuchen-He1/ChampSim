@@ -36,16 +36,15 @@
 
 CACHE::CACHE(CACHE&& other)
     : operable(other),
-
-      upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)), lower_translate(std::move(other.lower_translate)),
-
-      cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
-      HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG),
-      MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
-      pref_activate_mask(std::move(other.pref_activate_mask)),
-
-      sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
-
+      stlb_victim_cache(std::move(other.stlb_victim_cache)), stlb_page_hotness(std::move(other.stlb_page_hotness)),
+      stlb_victim_capacity(other.stlb_victim_capacity), stlb_hotness_reset_cycles(other.stlb_hotness_reset_cycles),
+      stlb_last_hotness_reset(other.stlb_last_hotness_reset), upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)),
+      lower_translate(std::move(other.lower_translate)), cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY),
+      MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE), HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY),
+      OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG), MAX_FILL(other.MAX_FILL),
+      prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
+      pref_activate_mask(std::move(other.pref_activate_mask)), is_itlb_cache(other.is_itlb_cache), is_dtlb_cache(other.is_dtlb_cache),
+      is_stlb_cache(other.is_stlb_cache), sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
       pref_module_pimpl(std::move(other.pref_module_pimpl)), repl_module_pimpl(std::move(other.repl_module_pimpl))
 {
   pref_module_pimpl->bind(this);
@@ -81,6 +80,14 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->match_offset_bits = other.match_offset_bits;
   this->virtual_prefetch = other.virtual_prefetch;
   this->pref_activate_mask = std::move(other.pref_activate_mask);
+  this->stlb_victim_cache = std::move(other.stlb_victim_cache);
+  this->stlb_page_hotness = std::move(other.stlb_page_hotness);
+  this->stlb_victim_capacity = other.stlb_victim_capacity;
+  this->stlb_hotness_reset_cycles = other.stlb_hotness_reset_cycles;
+  this->stlb_last_hotness_reset = other.stlb_last_hotness_reset;
+  this->is_itlb_cache = other.is_itlb_cache;
+  this->is_dtlb_cache = other.is_dtlb_cache;
+  this->is_stlb_cache = other.is_stlb_cache;
 
   this->sim_stats = std::move(other.sim_stats);
   this->roi_stats = std::move(other.roi_stats);
@@ -161,6 +168,105 @@ auto CACHE::matches_address(champsim::address addr) const
   };
 }
 
+void CACHE::maybe_reset_stlb_hotness()
+{
+  if (!is_stlb_cache || stlb_hotness_reset_cycles == 0) {
+    return;
+  }
+
+  auto cycle = static_cast<uint64_t>(current_time.time_since_epoch() / clock_period);
+  if (cycle - stlb_last_hotness_reset < stlb_hotness_reset_cycles) {
+    return;
+  }
+
+  stlb_page_hotness.clear();
+  for (auto& entry : stlb_victim_cache) {
+    entry.hotness = 0;
+  }
+  stlb_last_hotness_reset = cycle;
+}
+
+uint64_t CACHE::touch_stlb_hotness(champsim::address v_address)
+{
+  if (!is_stlb_cache) {
+    return 0;
+  }
+  if (stlb_hotness_reset_cycles != 0) {
+    maybe_reset_stlb_hotness();
+  }
+
+  auto vpn = champsim::page_number{v_address}.to<uint64_t>();
+  auto& count = stlb_page_hotness[vpn];
+  if (count == 0) {
+    count = 1;
+  } else if (count != std::numeric_limits<uint64_t>::max()) {
+    ++count;
+  }
+
+  return count;
+}
+
+uint64_t CACHE::stlb_hotness_for_vpn(uint64_t vpn) const
+{
+  auto it = stlb_page_hotness.find(vpn);
+  return it == stlb_page_hotness.end() ? 0 : it->second;
+}
+
+bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
+{
+  if (stlb_victim_capacity == 0) {
+    return false;
+  }
+
+  auto vpn = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
+  for (auto& entry : stlb_victim_cache) {
+    if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
+      entry.hotness = touch_stlb_hotness(handle_pkt.v_address);
+      response_type response{handle_pkt.address, handle_pkt.v_address, entry.data, entry.pf_metadata, handle_pkt.instr_depend_on_me};
+      for (auto* ret : handle_pkt.to_return) {
+        ret->push_back(response);
+      }
+      sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void CACHE::stlb_victim_insert(const champsim::cache_block& evicted)
+{
+  if (stlb_victim_capacity == 0) {
+    return;
+  }
+
+  auto vpn = champsim::page_number{evicted.v_address}.to<uint64_t>();
+  auto hotness = stlb_hotness_for_vpn(vpn);
+  if (hotness == 0) {
+    stlb_page_hotness[vpn] = 1;
+    hotness = 1;
+  }
+
+  for (auto& entry : stlb_victim_cache) {
+    if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
+      entry.address = evicted.address;
+      entry.v_address = evicted.v_address;
+      entry.data = evicted.data;
+      entry.pf_metadata = evicted.pf_metadata;
+      entry.hotness = hotness;
+      return;
+    }
+  }
+
+  auto victim_it = std::find_if(stlb_victim_cache.begin(), stlb_victim_cache.end(), [](const auto& entry) { return !entry.valid; });
+  if (victim_it == stlb_victim_cache.end()) {
+    victim_it = std::min_element(stlb_victim_cache.begin(), stlb_victim_cache.end(),
+                                 [](const auto& a, const auto& b) { return a.hotness < b.hotness; });
+  }
+
+  *victim_it = stlb_victim_entry{true, evicted.address, evicted.v_address, evicted.data, evicted.pf_metadata, hotness};
+}
+
 template <typename T>
 champsim::address CACHE::module_address(const T& element) const
 {
@@ -183,6 +289,10 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   assert(way <= set_end);
   assert(way != set_end || fill_mshr.type != access_type::WRITE); // Writes may not bypass
   const auto way_idx = std::distance(set_begin, way);             // cast protected by earlier assertion
+
+  if (is_stlb_cache && stlb_victim_capacity > 0 && way != set_end && way->valid) {
+    stlb_victim_insert(*way);
+  }
 
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} set: {} way: {} type: {} prefetch_metadata: {} cycle_enqueued: {} cycle: {}\n", NAME, __func__,
@@ -275,17 +385,10 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   impl_update_replacement_state(handle_pkt.cpu, get_set_index(handle_pkt.address), way_idx, module_address(handle_pkt), handle_pkt.ip, {}, handle_pkt.type,
                                 hit);
   // --- Per-page TLB stats (ITLB/DTLB/STLB) ---
-  {
-    const bool is_itlb = (NAME.find("ITLB") != std::string::npos);
-    const bool is_dtlb = (NAME.find("DTLB") != std::string::npos);
-    const bool is_stlb = (NAME.find("STLB") != std::string::npos);
-
-    if (is_itlb || is_dtlb || is_stlb) {
-      const bool is_instr = is_itlb;
-      auto vpn = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
-      page_stats::tlb_access(is_itlb ? "ITLB" : (is_dtlb ? "DTLB" : "STLB"),
-                            handle_pkt.cpu, vpn, hit,is_instr);
-    }
+  if (is_itlb_cache || is_dtlb_cache || is_stlb_cache) {
+    const bool is_instr = is_itlb_cache;
+    auto vpn = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
+    page_stats::tlb_access(is_itlb_cache ? "ITLB" : (is_dtlb_cache ? "DTLB" : "STLB"), handle_pkt.cpu, vpn, hit, is_instr);
   }
   // --- end per-page TLB stats ---
   if (hit) {
@@ -338,6 +441,15 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} type: {} local_prefetch: {} cycle: {}\n", NAME, __func__, handle_pkt.instr_id,
                handle_pkt.address, handle_pkt.v_address, access_type_names.at(champsim::to_underlying(handle_pkt.type)), handle_pkt.prefetch_from_this,
                current_time.time_since_epoch() / clock_period);
+  }
+
+  if (is_stlb_cache && stlb_victim_capacity > 0) {
+    if (stlb_victim_lookup(handle_pkt)) {
+      return true;
+    }
+  }
+  if (is_stlb_cache) {
+    touch_stlb_hotness(handle_pkt.v_address);
   }
 
   mshr_type to_allocate{handle_pkt, current_time};
