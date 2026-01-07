@@ -223,6 +223,7 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
     if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
       entry.hotness = touch_stlb_hotness(handle_pkt.v_address);
       response_type response{handle_pkt.address, handle_pkt.v_address, entry.data, entry.pf_metadata, handle_pkt.instr_depend_on_me};
+      page_stats::hsp_hit(handle_pkt.cpu, vpn, is_itlb_cache);
       for (auto* ret : handle_pkt.to_return) {
         ret->push_back(response);
       }

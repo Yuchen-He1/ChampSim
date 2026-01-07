@@ -23,6 +23,13 @@ void tlb_access(const char* which, uint32_t core, uint64_t vpn, bool is_hit, boo
   }
 }
 
+void hsp_hit(uint32_t core, uint64_t vpn, bool is_instr)
+{
+  key k{core, vpn, is_instr};
+  auto& c = g_stat[k];
+  ++c.hsp_hit;
+}
+
 const std::map<key, counters>& snapshot() { return g_stat; }
 
 void clear() { g_stat.clear(); }

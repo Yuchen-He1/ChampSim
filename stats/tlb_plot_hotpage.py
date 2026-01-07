@@ -27,7 +27,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-METRICS = ["itlb_hit", "dtlb_hit", "stlb_hit", "stlb_ptw"]  # from raw.*
+METRICS = ["dtlb_hit", "stlb_hit", "hsp_hit", "stlb_ptw"]  # from raw.*
 
 
 def _load_per_page_records(json_path: str) -> List[Dict[str, Any]]:
