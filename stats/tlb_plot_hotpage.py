@@ -9,19 +9,13 @@ Updates:
 - Keeps per-group zorder so the smallest bar is drawn on top
 
 Usage:
-  python tlb_plotter_overlay.py \
-    --json /path/to/your.json \
-    --csv /path/to/tlb_summary.csv \
-    --out_png /path/to/tlb_overlay.png \
-    --group_by vpn \
-    --alpha 0.55 \
-    --logy \
-    --topk 40 \
-    --max_xtick_labels 20
+  python tlb_plotter_overlay.py --json /path/to/your.json
+  python tlb_plotter_overlay.py --json /path/to/your.json --logy --topk 40
 """
 
 import json
 import argparse
+import os
 from typing import Optional, List, Dict, Any
 import pandas as pd
 import numpy as np
@@ -63,14 +57,23 @@ def _load_per_page_records(json_path: str) -> List[Dict[str, Any]]:
     return records
 
 
+def _default_outputs(json_path: str, topk: Optional[int]) -> Dict[str, str]:
+    base = json_path.rsplit(".", 1)[0]
+    if topk is None or topk <= 0:
+        suffix = "_topk_all"
+    else:
+        suffix = f"_topk{topk}"
+    return {
+        "csv_out": f"{base}.csv",
+        "out_png": f"{base}{suffix}.png",
+    }
+
+
 def process_tlb_json_overlay(
     json_path: str,
-    csv_out: str = "tlb_summary.csv",
-    out_png: str = "tlb_overlay.png",
     alpha: float = 0.6,
     logy: bool = True,
     topk: Optional[int] = 50,
-    group_by: str = "vpn",
     max_xtick_labels: int = 20,
 ) -> Dict[str, Any]:
     # Load & normalize
@@ -79,12 +82,20 @@ def process_tlb_json_overlay(
         raise ValueError("No records found under 'per_page_translation'.")
     df = pd.json_normalize(records)
 
+    group_by = "vpn"
+
     # Keep vpn as string for readability/consistency
-    if group_by in df.columns and group_by == "vpn":
+    if "vpn" in df.columns:
         df["vpn"] = df["vpn"].astype(str)
 
     # Promote raw.* counts to top-level metric names
+    raw_stlb_acc = df["raw.stlb_acc"] if "raw.stlb_acc" in df.columns else 0
+    raw_stlb_hit = df["raw.stlb_hit"] if "raw.stlb_hit" in df.columns else 0
+    raw_hsp_hit = df["raw.hsp_hit"] if "raw.hsp_hit" in df.columns else 0
     for m in METRICS:
+        if m == "stlb_ptw":
+            df[m] = (raw_stlb_acc - raw_stlb_hit - raw_hsp_hit)
+            continue
         raw_col = f"raw.{m}"
         if raw_col in df.columns:
             df[m] = df[raw_col]
@@ -98,9 +109,13 @@ def process_tlb_json_overlay(
     # Aggregate by group
     agg = df.groupby(group_by, dropna=False)[METRICS].sum().reset_index()
 
-    # Save full CSV (all rows)
+    # Save full CSV (all rows) if missing
     csv_cols = [group_by] + METRICS
-    agg.to_csv(csv_out, index=False)
+    outputs = _default_outputs(json_path, topk)
+    csv_out = outputs["csv_out"]
+    out_png = outputs["out_png"]
+    if not os.path.exists(csv_out):
+        agg.to_csv(csv_out, index=False)
 
     # Sort by total for plotting
     agg["_total_for_sort"] = agg[METRICS].sum(axis=1)
@@ -172,9 +187,6 @@ def process_tlb_json_overlay(
 def main():
     parser = argparse.ArgumentParser(description="TLB JSON (per_page_translation) → CSV & overlay plot (smallest on top)")
     parser.add_argument("--json", required=True, help="Path to input JSON (must contain 'per_page_translation' array).")
-    parser.add_argument("--csv", default="tlb_summary.csv", help="Path to output CSV (all groups).")
-    parser.add_argument("--out_png", default="tlb_overlay.png", help="Path to output overlay plot PNG.")
-    parser.add_argument("--group_by", default="vpn", help="Group key, e.g., vpn/core/is_instr.")
     parser.add_argument("--alpha", type=float, default=0.6, help="Bar transparency.")
     parser.add_argument("--logy", action="store_true", help="Use log-scale y-axis.")
     parser.add_argument("--topk", type=int, default=50, help="Top-K groups to plot by total (<=0 means all).")
@@ -184,12 +196,9 @@ def main():
 
     res = process_tlb_json_overlay(
         json_path=args.json,
-        csv_out=args.csv,
-        out_png=args.out_png,
         alpha=args.alpha,
         logy=args.logy,
         topk=args.topk if args.topk > 0 else None,
-        group_by=args.group_by,
         max_xtick_labels=args.max_xtick_labels,
     )
     print("Done.")
