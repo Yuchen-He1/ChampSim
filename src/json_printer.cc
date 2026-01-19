@@ -120,13 +120,16 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
     uint64_t dtlb_acc, dtlb_hit;
     uint64_t stlb_acc, stlb_hit;
     uint64_t hsp_hit;
+    uint64_t hsp_hit_interval_sum;
+    uint64_t hsp_hit_interval_count;
   };
 
   std::vector<Row> rows;
   for (const auto& kv : page_stats::snapshot()) {
     const auto& k = kv.first;
     const auto& c = kv.second;
-    rows.push_back(Row{k.core, k.vpn, k.is_instr, c.itlb_acc, c.itlb_hit, c.dtlb_acc, c.dtlb_hit, c.stlb_acc, c.stlb_hit, c.hsp_hit});
+    rows.push_back(Row{k.core, k.vpn, k.is_instr, c.itlb_acc, c.itlb_hit, c.dtlb_acc, c.dtlb_hit, c.stlb_acc, c.stlb_hit, c.hsp_hit,
+                       c.hsp_hit_interval_sum, c.hsp_hit_interval_count});
   }
 
   // Sort by "hotness":
@@ -155,19 +158,30 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
       {"dtlb_hit_rate", div(r.dtlb_hit, r.dtlb_acc)},
       {"stlb_hit_rate", div(r.stlb_hit, r.stlb_acc)},
       {"hsp_hit_rate", div(r.hsp_hit, r.stlb_acc)},
+      {"hsp_hit_interval_avg", div(r.hsp_hit_interval_sum, r.hsp_hit_interval_count)},
       // PTW rate = PTW count / total TLB accesses
       {"ptw_rate", div(stlb_ptw, tlb_acc_total)},
       {"raw", {
         {"itlb_acc", r.itlb_acc}, {"itlb_hit", r.itlb_hit},
         {"dtlb_acc", r.dtlb_acc}, {"dtlb_hit", r.dtlb_hit},
         {"stlb_acc", r.stlb_acc}, {"stlb_hit", r.stlb_hit},
-        {"hsp_hit", r.hsp_hit}, {"stlb_ptw", stlb_ptw}
+        {"hsp_hit", r.hsp_hit},
+        {"hsp_hit_interval_sum", r.hsp_hit_interval_sum},
+        {"hsp_hit_interval_count", r.hsp_hit_interval_count},
+        {"stlb_ptw", stlb_ptw}
       }}
     };
     j_pages.push_back(std::move(row));
   }
 
   nlohmann::json root;
+  uint64_t end_cycle = 0;
+  for (const auto& phase : stats) {
+    for (const auto& cpu : phase.sim_cpu_stats) {
+      end_cycle = std::max<uint64_t>(end_cycle, cpu.end_cycles);
+    }
+  }
+  root["end_cycle"] = end_cycle;
   root["phases"] = std::move(phases);
   root["per_page_translation"] = std::move(j_pages);
   stream << root;

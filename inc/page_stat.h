@@ -26,6 +26,10 @@ struct counters {
   uint64_t dtlb_acc{0}, dtlb_hit{0};
   uint64_t stlb_acc{0}, stlb_hit{0};
   uint64_t hsp_hit{0};
+  uint64_t hsp_hit_interval_sum{0};
+  uint64_t hsp_hit_interval_count{0};
+  uint64_t last_hsp_hit_cycle{0};
+  bool has_last_hsp_hit{false};
 };
 
 // Record an access for TLB or STLB.
@@ -36,11 +40,12 @@ struct counters {
 // is_instr: true for I-side (ITLB/STLB for instr), false for D-side
 void tlb_access(const char* which, uint32_t core, uint64_t vpn, bool is_hit, bool is_instr);
 
-// Record an HSP hit (STLB miss path fallback)
+// Record an HSP hit (STLB miss path fallback) and its cycle interval
 // core: CPU id
 // vpn:  virtual page number
 // is_instr: true for I-side (ITLB/STLB for instr), false for D-side
-void hsp_hit(uint32_t core, uint64_t vpn, bool is_instr);
+// cycle: current cycle when the hit occurs
+void hsp_hit(uint32_t core, uint64_t vpn, bool is_instr, uint64_t cycle);
 
 // Get a snapshot for printing
 const std::map<key, counters>& snapshot();

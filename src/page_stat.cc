@@ -23,11 +23,17 @@ void tlb_access(const char* which, uint32_t core, uint64_t vpn, bool is_hit, boo
   }
 }
 
-void hsp_hit(uint32_t core, uint64_t vpn, bool is_instr)
+void hsp_hit(uint32_t core, uint64_t vpn, bool is_instr, uint64_t cycle)
 {
   key k{core, vpn, is_instr};
   auto& c = g_stat[k];
   ++c.hsp_hit;
+  if (c.has_last_hsp_hit) {
+    c.hsp_hit_interval_sum += (cycle - c.last_hsp_hit_cycle);
+    ++c.hsp_hit_interval_count;
+  }
+  c.last_hsp_hit_cycle = cycle;
+  c.has_last_hsp_hit = true;
 }
 
 const std::map<key, counters>& snapshot() { return g_stat; }

@@ -179,9 +179,11 @@ void CACHE::maybe_reset_stlb_hotness()
     return;
   }
 
-  stlb_page_hotness.clear();
+  for (auto& kv : stlb_page_hotness) {
+    kv.second /= 2;
+  }
   for (auto& entry : stlb_victim_cache) {
-    entry.hotness = 0;
+    entry.hotness /= 2;
   }
   stlb_last_hotness_reset = cycle;
 }
@@ -223,7 +225,8 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
     if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
       entry.hotness = touch_stlb_hotness(handle_pkt.v_address);
       response_type response{handle_pkt.address, handle_pkt.v_address, entry.data, entry.pf_metadata, handle_pkt.instr_depend_on_me};
-      page_stats::hsp_hit(handle_pkt.cpu, vpn, is_itlb_cache);
+      auto cycle = static_cast<uint64_t>(current_time.time_since_epoch() / clock_period);
+      page_stats::hsp_hit(handle_pkt.cpu, vpn, is_itlb_cache, cycle);
       for (auto* ret : handle_pkt.to_return) {
         ret->push_back(response);
       }
