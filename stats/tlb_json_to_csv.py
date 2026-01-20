@@ -15,16 +15,13 @@ from typing import Any, Dict, List
 import pandas as pd
 
 
-def _load_per_page_records(json_path: str) -> List[Dict[str, Any]]:
+def _load_json(json_path: str) -> Dict[str, Any]:
     with open(json_path, "r", encoding="utf-8") as f:
         text = f.read().strip()
         try:
             obj = json.loads(text)
             if isinstance(obj, dict) and "per_page_translation" in obj:
-                arr = obj["per_page_translation"]
-                if not isinstance(arr, list):
-                    raise ValueError("'per_page_translation' must be a list")
-                return arr
+                return obj
         except Exception:
             pass
     records = []
@@ -43,7 +40,7 @@ def _load_per_page_records(json_path: str) -> List[Dict[str, Any]]:
                     records.extend(arr)
     if not records:
         raise ValueError("Could not find 'per_page_translation' array in the provided JSON.")
-    return records
+    return {"per_page_translation": records}
 
 
 def _default_csv_path(json_path: str) -> str:
@@ -56,8 +53,10 @@ def main() -> None:
     parser.add_argument("--csv", help="Path to output CSV (default: JSON basename + .csv).")
     args = parser.parse_args()
 
-    records = _load_per_page_records(args.json)
+    obj = _load_json(args.json)
+    records = obj.get("per_page_translation", [])
     df = pd.json_normalize(records)
+    end_cycle = obj.get("end_cycle")
 
     # Keep vpn as string for readability/consistency
     if "vpn" in df.columns:
@@ -95,7 +94,12 @@ def main() -> None:
     agg["hsp_hit_interval_avg"] = agg["hsp_hit_interval_sum"] / agg["hsp_hit_interval_count"].replace(0, pd.NA)
 
     csv_out = args.csv or _default_csv_path(args.json)
-    agg.to_csv(csv_out, index=False)
+    if end_cycle is not None:
+        with open(csv_out, "w", encoding="utf-8") as f:
+            f.write(f"end_cycle,{end_cycle}\n")
+            agg.to_csv(f, index=False)
+    else:
+        agg.to_csv(csv_out, index=False)
     print(f"Wrote {csv_out}")
 
 
