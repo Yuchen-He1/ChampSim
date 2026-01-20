@@ -103,11 +103,14 @@ def main():
 
     with open(args.json, "r") as f:
         root = json.load(f)
+    end_cycle = root.get("end_cycle")
 
     phases = root.get("phases", [])
     if not isinstance(phases, list) or not phases:
         print("No phases found.", file=sys.stderr)
         sys.exit(1)
+    if end_cycle is not None:
+        print(f"=== End Cycle: {end_cycle} ===")
 
     for ph in phases:
         pname = ph.get("name", "phase")

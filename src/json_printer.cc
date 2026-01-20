@@ -148,7 +148,8 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
 
   for (const auto& r : rows) {
     const uint64_t tlb_acc_total = r.itlb_acc + r.dtlb_acc;
-    const uint64_t stlb_ptw = (r.stlb_acc >= r.stlb_hit) ? (r.stlb_acc - r.stlb_hit) : 0;
+    const uint64_t stlb_ptw =
+        (r.stlb_acc >= (r.stlb_hit + r.hsp_hit)) ? (r.stlb_acc - r.stlb_hit - r.hsp_hit) : 0;
 
     nlohmann::json row = {
       {"core", r.core},

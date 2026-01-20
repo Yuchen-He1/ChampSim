@@ -115,7 +115,7 @@ public:
 
 private:
   static constexpr std::size_t DEFAULT_STLB_VICTIM_CAPACITY = 4096;
-  static constexpr std::size_t DEFAULT_STLB_HOTNESS_RESET_CYCLES = 10000000;
+  static constexpr std::size_t DEFAULT_STLB_HOTNESS_RESET_CYCLES = 5000000;
 
   bool try_hit(const tag_lookup_type& handle_pkt);
   bool handle_fill(const mshr_type& fill_mshr);
