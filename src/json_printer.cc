@@ -166,6 +166,13 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
   }
 
   nlohmann::json root;
+  uint64_t end_cycle = 0;
+  for (const auto& phase : stats) {
+    for (const auto& cpu : phase.sim_cpu_stats) {
+      end_cycle = std::max<uint64_t>(end_cycle, cpu.end_cycles);
+    }
+  }
+  root["end_cycle"] = end_cycle;
   root["phases"] = std::move(phases);
   root["per_page_translation"] = std::move(j_pages);
   stream << root;
