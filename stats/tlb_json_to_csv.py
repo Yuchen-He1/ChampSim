@@ -57,6 +57,7 @@ def main() -> None:
     records = obj.get("per_page_translation", [])
     df = pd.json_normalize(records)
     end_cycle = obj.get("end_cycle")
+    roi_cycles_hsp = obj.get("roi_cycles_with_hsp")
 
     # Keep vpn as string for readability/consistency
     if "vpn" in df.columns:
@@ -93,13 +94,13 @@ def main() -> None:
     )
     agg["hsp_hit_interval_avg"] = agg["hsp_hit_interval_sum"] / agg["hsp_hit_interval_count"].replace(0, pd.NA)
 
-    csv_out = args.csv or _default_csv_path(args.json)
     if end_cycle is not None:
-        with open(csv_out, "w", encoding="utf-8") as f:
-            f.write(f"end_cycle,{end_cycle}\n")
-            agg.to_csv(f, index=False)
-    else:
-        agg.to_csv(csv_out, index=False)
+        agg["end_cycle"] = end_cycle
+    if roi_cycles_hsp is not None:
+        agg["roi_cycles_with_hsp"] = roi_cycles_hsp
+
+    csv_out = args.csv or _default_csv_path(args.json)
+    agg.to_csv(csv_out, index=False)
     print(f"Wrote {csv_out}")
 
 

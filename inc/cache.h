@@ -354,14 +354,6 @@ public:
         pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)), repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))
   {
     if (is_stlb_cache && stlb_victim_capacity > 0) {
-      // Add HSP lookup latency: log2(HSP entries) cycles to STLB hit latency.
-      std::size_t entries = stlb_victim_capacity;
-      uint64_t hsp_cycles = 0;
-      while (entries > 1) {
-        entries = (entries + 1) >> 1;
-        ++hsp_cycles;
-      }
-      HIT_LATENCY += (b.m_clock_period * hsp_cycles);
       stlb_victim_cache.resize(stlb_victim_capacity);
     }
   }

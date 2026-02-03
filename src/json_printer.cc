@@ -4,6 +4,7 @@
  */
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 #include <nlohmann/json.hpp>
 
@@ -146,10 +147,12 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
     return a.vpn < b.vpn;
   });
 
+  uint64_t hsp_accesses = 0;
   for (const auto& r : rows) {
     const uint64_t tlb_acc_total = r.itlb_acc + r.dtlb_acc;
     const uint64_t stlb_ptw =
         (r.stlb_acc >= (r.stlb_hit + r.hsp_hit)) ? (r.stlb_acc - r.stlb_hit - r.hsp_hit) : 0;
+    hsp_accesses += (r.hsp_hit + stlb_ptw);
 
     nlohmann::json row = {
       {"core", r.core},
@@ -176,12 +179,24 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
   }
 
   nlohmann::json root;
+  // Add HSP lookup latency into ROI cycles: log2(HSP entries) * (HSP hits + PTWs)
+  constexpr uint64_t hsp_entries = 4096;
+  const auto hsp_cycles = static_cast<uint64_t>(std::ceil(std::log2(static_cast<double>(hsp_entries))));
+  uint64_t hsp_extra_cycles = hsp_accesses * hsp_cycles;
+  uint64_t roi_cycles_total = 0;
   uint64_t end_cycle = 0;
   for (const auto& phase : stats) {
+    for (const auto& cpu : phase.roi_cpu_stats) {
+      roi_cycles_total += cpu.cycles();
+    }
     for (const auto& cpu : phase.sim_cpu_stats) {
       end_cycle = std::max<uint64_t>(end_cycle, cpu.end_cycles);
     }
   }
+  root["hsp_lookup_accesses"] = hsp_accesses;
+  root["hsp_lookup_latency_cycles"] = hsp_cycles;
+  root["hsp_lookup_extra_cycles"] = hsp_extra_cycles;
+  root["roi_cycles_with_hsp"] = roi_cycles_total + hsp_extra_cycles;
   root["end_cycle"] = end_cycle;
   root["phases"] = std::move(phases);
   root["per_page_translation"] = std::move(j_pages);

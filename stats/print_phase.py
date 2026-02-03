@@ -13,6 +13,14 @@ import argparse, json, sys
 from typing import Any, Dict, List, Tuple
 
 ACCESS_TYPES = ["LOAD", "RFO", "PREFETCH", "WRITE", "TRANSLATION"]
+BRANCH_TYPES = [
+    "BRANCH_DIRECT_JUMP",
+    "BRANCH_INDIRECT",
+    "BRANCH_CONDITIONAL",
+    "BRANCH_DIRECT_CALL",
+    "BRANCH_INDIRECT_CALL",
+    "BRANCH_RETURN",
+]
 
 def safe_list_num(v, idx):
     """JSON sometimes stores per-cpu counts as 1-element arrays; handle both scalar and list."""
@@ -95,6 +103,24 @@ def print_cache_block(cache_name: str, cache: Dict[str, Any], cpu_idx: int):
     if any([pl, ph, pb, pe]):
         print(f"{cache_name} PIN LINES: {pl:10d} HITS: {ph:10d} BYPASS_ON_FULL: {pb:10d} EVICTED_COLDER: {pe:10d}")
 
+def print_core_block(core_idx: int, core: Dict[str, Any]):
+    instrs = int(core.get("instructions", 0) or 0)
+    cycles = int(core.get("cycles", 0) or 0)
+    ipc = (instrs / cycles) if cycles else 0.0
+    avg_rob = core.get("Avg ROB occupancy at mispredict", 0.0) or 0.0
+
+    mispredict = core.get("mispredict", {}) if isinstance(core.get("mispredict", {}), dict) else {}
+    total_misp = int(sum(int(v or 0) for v in mispredict.values()))
+    mpki = (1000.0 * total_misp / instrs) if instrs else 0.0
+
+    print(f"cpu{core_idx} cumulative IPC: {ipc:.4g} instructions: {instrs} cycles: {cycles}")
+    print(f"cpu{core_idx} Branch Mispredicts: {total_misp} MPKI: {mpki:.4g} Average ROB Occupancy at Mispredict: {avg_rob}")
+    print("Branch type misses")
+    for b in BRANCH_TYPES:
+        if b in mispredict:
+            print(f"{b}: {int(mispredict.get(b, 0) or 0)}")
+    print()
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", required=True, help="Phases JSON file")
@@ -104,13 +130,27 @@ def main():
     with open(args.json, "r") as f:
         root = json.load(f)
     end_cycle = root.get("end_cycle")
-
+    roi_cycles = root.get("roi_cycles_with_hsp")
     phases = root.get("phases", [])
+
+    roi_cycles_base = 0
+    for ph in phases:
+        roi = ph.get("roi", {})
+        cores = roi.get("cores", [])
+        if isinstance(cores, list):
+            for c in cores:
+                if isinstance(c, dict):
+                    roi_cycles_base += int(c.get("cycles", 0) or 0)
+
     if not isinstance(phases, list) or not phases:
         print("No phases found.", file=sys.stderr)
         sys.exit(1)
     if end_cycle is not None:
         print(f"=== End Cycle: {end_cycle} ===")
+    if roi_cycles_base > 0:
+        print(f"=== ROI Cycles: {roi_cycles_base} ===")
+    if roi_cycles is not None:
+        print(f"=== ROI Cycles + HSP Latency: {roi_cycles} ===")
 
     for ph in phases:
         pname = ph.get("name", "phase")
@@ -118,6 +158,11 @@ def main():
         for sec_name in (["roi","sim"] if args.which=="both" else [args.which]):
             sec = ph.get(sec_name, {})
             print(("Region of Interest Statistics" if sec_name=="roi" else "Total Simulation Statistics (not including warmup)"))
+            cores = sec.get("cores", [])
+            if isinstance(cores, list) and cores:
+                for i, c in enumerate(cores):
+                    if isinstance(c, dict):
+                        print_core_block(i, c)
             caches = collect_caches(sec)
             for cache_name, cache in caches:
                 ncpu = num_cpus_from_cache(cache)
