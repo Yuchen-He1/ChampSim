@@ -6,7 +6,7 @@
 
 #include "cache.h"
 #include "modules.h"
-#include "msl/fwcounter.h"
+#include "msl/stat_methods.h"
 
 struct drrip : public champsim::modules::replacement {
 private:
@@ -21,10 +21,11 @@ public:
     follower, brrip_leader, srrip_leader
   };
 
-  long NUM_SET, NUM_WAY, SET_SAMPLE_RATE;
+  long NUM_SET, NUM_WAY;
 
   unsigned brrip_counter;
-  std::vector<champsim::msl::fwcounter<PSEL_WIDTH>> PSEL;
+
+  std::vector<champsim::msl::dscounter<long,PSEL_WIDTH>> PSEL;
   std::vector<unsigned> rrpv;
 
   drrip(CACHE* cache);
@@ -42,19 +43,6 @@ public:
 
   void update_brrip(long set, long way);
   void update_srrip(long set, long way);
-
-  [[nodiscard]] constexpr set_type get_set_type(long set) {
-    auto mask = SET_SAMPLE_RATE - 1;
-    auto shift = champsim::lg2(SET_SAMPLE_RATE);
-    auto low_slice = set & mask;
-    auto high_slice = (set >> shift) & mask;
-    if (high_slice == ~low_slice) {
-      return set_type::brrip_leader;
-    } else if (high_slice == low_slice) {
-      return set_type::srrip_leader;
-    }
-    return set_type::follower;
-  }
 
 };
 
