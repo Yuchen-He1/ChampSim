@@ -35,9 +35,10 @@
 
 CACHE::CACHE(CACHE&& other)
     : operable(other),
-      stlb_victim_cache(std::move(other.stlb_victim_cache)), stlb_page_hotness(std::move(other.stlb_page_hotness)),
-      stlb_victim_capacity(other.stlb_victim_capacity), stlb_hotness_reset_cycles(other.stlb_hotness_reset_cycles),
-      stlb_last_hotness_reset(other.stlb_last_hotness_reset), upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)),
+      stlb_victim_cache(std::move(other.stlb_victim_cache)), stlb_victim_capacity(other.stlb_victim_capacity),
+      stlb_hotness_reset_cycles(other.stlb_hotness_reset_cycles), stlb_hotness_saturation(other.stlb_hotness_saturation),
+      stlb_last_hotness_reset(other.stlb_last_hotness_reset),
+      upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)),
       lower_translate(std::move(other.lower_translate)), cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY),
       MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE), HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY),
       OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG), MAX_FILL(other.MAX_FILL),
@@ -80,9 +81,9 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->virtual_prefetch = other.virtual_prefetch;
   this->pref_activate_mask = std::move(other.pref_activate_mask);
   this->stlb_victim_cache = std::move(other.stlb_victim_cache);
-  this->stlb_page_hotness = std::move(other.stlb_page_hotness);
   this->stlb_victim_capacity = other.stlb_victim_capacity;
   this->stlb_hotness_reset_cycles = other.stlb_hotness_reset_cycles;
+  this->stlb_hotness_saturation = other.stlb_hotness_saturation;
   this->stlb_last_hotness_reset = other.stlb_last_hotness_reset;
   this->is_itlb_cache = other.is_itlb_cache;
   this->is_dtlb_cache = other.is_dtlb_cache;
@@ -178,39 +179,28 @@ void CACHE::maybe_reset_stlb_hotness()
     return;
   }
 
-  for (auto& kv : stlb_page_hotness) {
-    kv.second /= 2;
-  }
   for (auto& entry : stlb_victim_cache) {
-    entry.hotness /= 2;
+    if (!entry.valid) {
+      continue;
+    }
+    if (!entry.access_bit) {
+      entry.hotness /= 2;
+    }
+    // Age-tracking bit is cleared every reset window.
+    entry.access_bit = false;
   }
   stlb_last_hotness_reset = cycle;
 }
 
-uint64_t CACHE::touch_stlb_hotness(champsim::address v_address)
+uint64_t CACHE::bump_stlb_hotness(uint64_t hotness) const
 {
-  if (!is_stlb_cache) {
-    return 0;
+  if (hotness == 0) {
+    return 1;
   }
-  if (stlb_hotness_reset_cycles != 0) {
-    maybe_reset_stlb_hotness();
+  if (hotness < stlb_hotness_saturation) {
+    return hotness + 1;
   }
-
-  auto vpn = champsim::page_number{v_address}.to<uint64_t>();
-  auto& count = stlb_page_hotness[vpn];
-  if (count == 0) {
-    count = 1;
-  } else if (count != std::numeric_limits<uint64_t>::max()) {
-    ++count;
-  }
-
-  return count;
-}
-
-uint64_t CACHE::stlb_hotness_for_vpn(uint64_t vpn) const
-{
-  auto it = stlb_page_hotness.find(vpn);
-  return it == stlb_page_hotness.end() ? 0 : it->second;
+  return stlb_hotness_saturation;
 }
 
 bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
@@ -222,7 +212,11 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
   auto vpn = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
   for (auto& entry : stlb_victim_cache) {
     if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
-      entry.hotness = touch_stlb_hotness(handle_pkt.v_address);
+      if (stlb_hotness_reset_cycles != 0) {
+        maybe_reset_stlb_hotness();
+      }
+      entry.hotness = bump_stlb_hotness(entry.hotness);
+      entry.access_bit = true;
       response_type response{handle_pkt.address, handle_pkt.v_address, entry.data, entry.pf_metadata, handle_pkt.instr_depend_on_me};
       auto cycle = static_cast<uint64_t>(current_time.time_since_epoch() / clock_period);
       page_stats::hsp_hit(handle_pkt.cpu, vpn, is_itlb_cache, cycle);
@@ -242,32 +236,43 @@ void CACHE::stlb_victim_insert(const champsim::cache_block& evicted)
   if (stlb_victim_capacity == 0) {
     return;
   }
-
-  auto vpn = champsim::page_number{evicted.v_address}.to<uint64_t>();
-  auto hotness = stlb_hotness_for_vpn(vpn);
-  if (hotness == 0) {
-    stlb_page_hotness[vpn] = 1;
-    hotness = 1;
-  }
-
-  for (auto& entry : stlb_victim_cache) {
-    if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
-      entry.address = evicted.address;
-      entry.v_address = evicted.v_address;
-      entry.data = evicted.data;
-      entry.pf_metadata = evicted.pf_metadata;
-      entry.hotness = hotness;
-      return;
-    }
+  if (stlb_hotness_reset_cycles != 0) {
+    maybe_reset_stlb_hotness();
   }
 
   auto victim_it = std::find_if(stlb_victim_cache.begin(), stlb_victim_cache.end(), [](const auto& entry) { return !entry.valid; });
   if (victim_it == stlb_victim_cache.end()) {
-    victim_it = std::min_element(stlb_victim_cache.begin(), stlb_victim_cache.end(),
-                                 [](const auto& a, const auto& b) { return a.hotness < b.hotness; });
+    auto access0_begin = std::find_if(stlb_victim_cache.begin(), stlb_victim_cache.end(), [](const auto& entry) {
+      return entry.valid && !entry.access_bit;
+    });
+
+    if (access0_begin != stlb_victim_cache.end()) {
+      victim_it = std::min_element(stlb_victim_cache.begin(), stlb_victim_cache.end(), [](const auto& a, const auto& b) {
+        if (!a.valid) {
+          return false;
+        }
+        if (!b.valid) {
+          return true;
+        }
+        if (a.access_bit != b.access_bit) {
+          return !a.access_bit; // access_bit=0 entries always win
+        }
+        return a.hotness < b.hotness;
+      });
+    } else {
+      victim_it = std::min_element(stlb_victim_cache.begin(), stlb_victim_cache.end(), [](const auto& a, const auto& b) {
+        if (!a.valid) {
+          return false;
+        }
+        if (!b.valid) {
+          return true;
+        }
+        return a.hotness < b.hotness;
+      });
+    }
   }
 
-  *victim_it = stlb_victim_entry{true, evicted.address, evicted.v_address, evicted.data, evicted.pf_metadata, hotness};
+  *victim_it = stlb_victim_entry{true, evicted.address, evicted.v_address, evicted.data, evicted.pf_metadata, 1, true};
 }
 
 template <typename T>
@@ -451,10 +456,6 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
       return true;
     }
   }
-  if (is_stlb_cache) {
-    touch_stlb_hotness(handle_pkt.v_address);
-  }
-
   mshr_type to_allocate{handle_pkt, current_time};
 
   cpu = handle_pkt.cpu;
@@ -969,6 +970,9 @@ void CACHE::impl_replacement_final_stats() const { repl_module_pimpl->impl_repla
 
 void CACHE::initialize()
 {
+  if (is_stlb_cache) {
+    fmt::print("[HSP_CFG] {} size={} reset_cycles={} hotness_sat={}\n", NAME, stlb_victim_capacity, stlb_hotness_reset_cycles, stlb_hotness_saturation);
+  }
   impl_prefetcher_initialize();
   impl_initialize_replacement();
 }
