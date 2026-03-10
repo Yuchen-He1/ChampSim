@@ -41,3 +41,6 @@ stats/*.csv
 stats/png/*.png
 stats/csv/*.csv
 stats/log/*
+
+Skill.md
+stats/out_hsp

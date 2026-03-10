@@ -33,6 +33,11 @@
 
 #include "page_stat.h"  // ADD: for per-page TLB stats
 
+namespace
+{
+std::unordered_map<std::string, std::vector<CACHE::hsp_halve_snapshot>> g_hsp_halve_history;
+}
+
 CACHE::CACHE(CACHE&& other)
     : operable(other),
       stlb_victim_cache(std::move(other.stlb_victim_cache)), stlb_page_hotness(std::move(other.stlb_page_hotness)),
@@ -184,8 +189,29 @@ void CACHE::maybe_reset_stlb_hotness()
   for (auto& entry : stlb_victim_cache) {
     entry.hotness /= 2;
   }
+  record_stlb_victim_halve_snapshot(cycle);
   stlb_last_hotness_reset = cycle;
 }
+
+void CACHE::record_stlb_victim_halve_snapshot(uint64_t cycle)
+{
+  if (!is_stlb_cache || stlb_victim_capacity == 0) {
+    return;
+  }
+
+  hsp_halve_snapshot snapshot{};
+  snapshot.cycle = cycle;
+  snapshot.entry_vpns.reserve(stlb_victim_cache.size());
+  snapshot.entry_counters.reserve(stlb_victim_cache.size());
+  for (const auto& entry : stlb_victim_cache) {
+    snapshot.entry_vpns.push_back(champsim::page_number{entry.v_address}.to<uint64_t>());
+    snapshot.entry_counters.push_back(entry.hotness);
+  }
+
+  g_hsp_halve_history[NAME].push_back(std::move(snapshot));
+}
+
+const std::unordered_map<std::string, std::vector<CACHE::hsp_halve_snapshot>>& CACHE::get_hsp_halve_history() { return g_hsp_halve_history; }
 
 uint64_t CACHE::touch_stlb_hotness(champsim::address v_address)
 {
@@ -985,6 +1011,9 @@ void CACHE::begin_phase()
   sim_stats = new_sim_stats;
   //count only roi no warmup
   page_stats::clear();
+  if (is_stlb_cache) {
+    g_hsp_halve_history[NAME].clear();
+  }
   
   for (auto* ul : upper_levels) {
     channel_type::stats_type ul_new_roi_stats;

@@ -198,6 +198,15 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
   root["hsp_lookup_extra_cycles"] = hsp_extra_cycles;
   root["roi_cycles_with_hsp"] = roi_cycles_total + hsp_extra_cycles;
   root["end_cycle"] = end_cycle;
+  nlohmann::json hsp_halve_history_json = nlohmann::json::object();
+  for (const auto& [cache_name, snapshots] : CACHE::get_hsp_halve_history()) {
+    nlohmann::json snapshot_json = nlohmann::json::array();
+    for (const auto& snapshot : snapshots) {
+      snapshot_json.push_back(nlohmann::json{{"cycle", snapshot.cycle}, {"entry_vpns", snapshot.entry_vpns}, {"entry_counters", snapshot.entry_counters}});
+    }
+    hsp_halve_history_json[cache_name] = std::move(snapshot_json);
+  }
+  root["hsp_buffer_halve_history"] = std::move(hsp_halve_history_json);
   root["phases"] = std::move(phases);
   root["per_page_translation"] = std::move(j_pages);
   stream << root;

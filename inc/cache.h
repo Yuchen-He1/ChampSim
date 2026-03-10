@@ -115,7 +115,7 @@ public:
 
 private:
   static constexpr std::size_t DEFAULT_STLB_VICTIM_CAPACITY = 4096;
-  static constexpr std::size_t DEFAULT_STLB_HOTNESS_RESET_CYCLES = 5000000;
+  static constexpr std::size_t DEFAULT_STLB_HOTNESS_RESET_CYCLES = 10000000;
 
   bool try_hit(const tag_lookup_type& handle_pkt);
   bool handle_fill(const mshr_type& fill_mshr);
@@ -126,12 +126,21 @@ private:
 
   void issue_translation(tag_lookup_type& q_entry) const;
   void maybe_reset_stlb_hotness();
+  void record_stlb_victim_halve_snapshot(uint64_t cycle);
   uint64_t touch_stlb_hotness(champsim::address v_address);
   uint64_t stlb_hotness_for_vpn(uint64_t vpn) const;
   bool stlb_victim_lookup(const tag_lookup_type& handle_pkt);
   void stlb_victim_insert(const champsim::cache_block& evicted);
 
 public:
+  struct hsp_halve_snapshot {
+    uint64_t cycle = 0;
+    std::vector<uint64_t> entry_vpns{};
+    std::vector<uint64_t> entry_counters{};
+  };
+
+  static const std::unordered_map<std::string, std::vector<hsp_halve_snapshot>>& get_hsp_halve_history();
+
   using BLOCK = champsim::cache_block;
 
 private:
