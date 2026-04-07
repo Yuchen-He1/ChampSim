@@ -16,6 +16,11 @@ Output:
   - new_vpns
   - pages_accessed_flag
 """
+# python stats/analyze_hsp_hotness.py \
+#   --csv <input_wide_csv> \
+#   --cache cpu0_STLB \
+#   --skip-first-halves 10 \
+#   --thresholds 1,2,4,8
 
 import argparse
 import csv
@@ -141,7 +146,6 @@ def infer_access(prev_map: Dict[int, int], curr_map: Dict[int, int]) -> Dict[str
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compute approximate WS and simple access stats from HSP wide CSV.")
     parser.add_argument("--csv", required=True, help="Input wide CSV path.")
-    parser.add_argument("--out-dir", default="stats/out_hsp", help="Output directory.")
     parser.add_argument("--cache", help="Cache filter, e.g., cpu0_STLB.")
     parser.add_argument("--skip-first-halves", type=int, default=0, help="Skip first N halve snapshots (useful to ignore warmup carry-over).")
     parser.add_argument("--stride", type=int, default=1, help="Use one every N cycles after sorting (default: 1).")
@@ -157,8 +161,6 @@ def main() -> None:
     thresholds = parse_thresholds(args.thresholds)
 
     csv_path = Path(args.csv)
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     with csv_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.reader(f)
@@ -225,7 +227,7 @@ def main() -> None:
         prev_cycle = cycle
         prev_map = curr_map
 
-    out_csv = out_dir / "hsp_approx_working_set.csv"
+    out_csv = csv_path.with_name(f"{csv_path.stem}_filter_hsp_approx_working_set.csv")
     pd.DataFrame(rows).to_csv(out_csv, index=False)
 
     print(f"Wrote: {out_csv}")
