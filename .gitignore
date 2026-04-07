@@ -41,3 +41,4 @@ stats/*.csv
 stats/png/
 stats/csv/
 stats/log/*.txt
+Skill.md
