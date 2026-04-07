@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 #include <iomanip>
 #include <numeric>
 #include <fmt/core.h>
@@ -36,12 +37,29 @@
 namespace
 {
 std::unordered_map<std::string, std::vector<CACHE::hsp_halve_snapshot>> g_hsp_halve_history;
+
+std::optional<std::size_t> read_size_t_env(const char* name)
+{
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return std::nullopt;
+  }
+
+  char* end = nullptr;
+  auto value = std::strtoull(raw, &end, 10);
+  if (end == raw || *end != '\0') {
+    return std::nullopt;
+  }
+
+  return static_cast<std::size_t>(value);
+}
 }
 
 CACHE::CACHE(CACHE&& other)
     : operable(other),
       stlb_victim_cache(std::move(other.stlb_victim_cache)), stlb_page_hotness(std::move(other.stlb_page_hotness)),
       stlb_victim_capacity(other.stlb_victim_capacity), stlb_hotness_reset_cycles(other.stlb_hotness_reset_cycles),
+      stlb_promote_hotness_threshold(other.stlb_promote_hotness_threshold),
       stlb_last_hotness_reset(other.stlb_last_hotness_reset), upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)),
       lower_translate(std::move(other.lower_translate)), cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY),
       MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE), HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY),
@@ -88,6 +106,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->stlb_page_hotness = std::move(other.stlb_page_hotness);
   this->stlb_victim_capacity = other.stlb_victim_capacity;
   this->stlb_hotness_reset_cycles = other.stlb_hotness_reset_cycles;
+  this->stlb_promote_hotness_threshold = other.stlb_promote_hotness_threshold;
   this->stlb_last_hotness_reset = other.stlb_last_hotness_reset;
   this->is_itlb_cache = other.is_itlb_cache;
   this->is_dtlb_cache = other.is_dtlb_cache;
@@ -183,11 +202,15 @@ void CACHE::maybe_reset_stlb_hotness()
     return;
   }
 
-  for (auto& kv : stlb_page_hotness) {
-    kv.second /= 2;
-  }
   for (auto& entry : stlb_victim_cache) {
     entry.hotness /= 2;
+
+    if (!entry.valid) {
+      continue;
+    }
+
+    auto vpn = champsim::page_number{entry.v_address}.to<uint64_t>();
+    stlb_page_hotness[vpn] = entry.hotness;
   }
   record_stlb_victim_halve_snapshot(cycle);
   stlb_last_hotness_reset = cycle;
@@ -252,12 +275,67 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
       response_type response{handle_pkt.address, handle_pkt.v_address, entry.data, entry.pf_metadata, handle_pkt.instr_depend_on_me};
       auto cycle = static_cast<uint64_t>(current_time.time_since_epoch() / clock_period);
       page_stats::hsp_hit(handle_pkt.cpu, vpn, is_itlb_cache, cycle);
+      maybe_promote_stlb_victim_entry(handle_pkt, entry);
       for (auto* ret : handle_pkt.to_return) {
         ret->push_back(response);
       }
       sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
       return true;
     }
+  }
+
+  return false;
+}
+
+bool CACHE::maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, stlb_victim_entry& entry)
+{
+  if (!entry.valid) {
+    return false;
+  }
+
+  if (stlb_promote_hotness_threshold != 0 && entry.hotness < stlb_promote_hotness_threshold) {
+    return false;
+  }
+
+  auto [set_begin, set_end] = get_set_span(entry.address);
+  auto way = std::find_if_not(set_begin, set_end, [](const auto& x) { return x.valid; });
+  if (way == set_end) {
+    way = std::next(set_begin, impl_find_victim(handle_pkt.cpu, handle_pkt.instr_id, get_set_index(entry.address), &*set_begin, handle_pkt.ip, entry.address,
+                                                handle_pkt.type));
+  }
+
+  champsim::cache_block evicted_stlb_entry{};
+  const bool has_stlb_victim = (way != set_end && way->valid);
+  if (has_stlb_victim) {
+    evicted_stlb_entry = *way;
+  }
+
+  if (way != set_end) {
+    champsim::cache_block promoted{};
+    promoted.valid = true;
+    promoted.address = entry.address;
+    promoted.v_address = entry.v_address;
+    promoted.data = entry.data;
+    promoted.pf_metadata = entry.pf_metadata;
+    *way = promoted;
+    impl_replacement_cache_fill(handle_pkt.cpu, get_set_index(entry.address), std::distance(set_begin, way), entry.address, handle_pkt.ip, {},
+                                handle_pkt.type);
+
+    if (has_stlb_victim) {
+      auto vpn = champsim::page_number{evicted_stlb_entry.v_address}.to<uint64_t>();
+      auto hotness = stlb_hotness_for_vpn(vpn);
+
+      // Swap-style promote: the evicted STLB entry reuses the current HSP slot.
+      entry.address = evicted_stlb_entry.address;
+      entry.v_address = evicted_stlb_entry.v_address;
+      entry.data = evicted_stlb_entry.data;
+      entry.pf_metadata = evicted_stlb_entry.pf_metadata;
+      entry.hotness = hotness;
+    } else {
+      // Promote-back keeps global page hot counter, but removes this HSP copy.
+      entry.valid = false;
+    }
+    return true;
   }
 
   return false;
@@ -271,10 +349,6 @@ void CACHE::stlb_victim_insert(const champsim::cache_block& evicted)
 
   auto vpn = champsim::page_number{evicted.v_address}.to<uint64_t>();
   auto hotness = stlb_hotness_for_vpn(vpn);
-  if (hotness == 0) {
-    stlb_page_hotness[vpn] = 1;
-    hotness = 1;
-  }
 
   for (auto& entry : stlb_victim_cache) {
     if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
@@ -291,6 +365,12 @@ void CACHE::stlb_victim_insert(const champsim::cache_block& evicted)
   if (victim_it == stlb_victim_cache.end()) {
     victim_it = std::min_element(stlb_victim_cache.begin(), stlb_victim_cache.end(),
                                  [](const auto& a, const auto& b) { return a.hotness < b.hotness; });
+  }
+
+  if (victim_it != stlb_victim_cache.end() && victim_it->valid) {
+    auto evicted_vpn = champsim::page_number{victim_it->v_address}.to<uint64_t>();
+    // Real HSP eviction should clear global page hot counter for that VPN.
+    stlb_page_hotness[evicted_vpn] = 0;
   }
 
   *victim_it = stlb_victim_entry{true, evicted.address, evicted.v_address, evicted.data, evicted.pf_metadata, hotness};
@@ -476,9 +556,6 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     if (stlb_victim_lookup(handle_pkt)) {
       return true;
     }
-  }
-  if (is_stlb_cache) {
-    touch_stlb_hotness(handle_pkt.v_address);
   }
 
   mshr_type to_allocate{handle_pkt, current_time};
@@ -995,6 +1072,25 @@ void CACHE::impl_replacement_final_stats() const { repl_module_pimpl->impl_repla
 
 void CACHE::initialize()
 {
+  if (is_stlb_cache) {
+    if (auto capacity = read_size_t_env("CHAMPSIM_STLB_HSP_BUFFER_CAPACITY"); capacity.has_value()) {
+      stlb_victim_capacity = *capacity;
+      stlb_victim_cache.assign(stlb_victim_capacity, stlb_victim_entry{});
+      stlb_page_hotness.clear();
+    }
+
+    if (auto reset_cycles = read_size_t_env("CHAMPSIM_STLB_HSP_RESET_CYCLES"); reset_cycles.has_value()) {
+      stlb_hotness_reset_cycles = *reset_cycles;
+    }
+
+    if (auto threshold = read_size_t_env("CHAMPSIM_STLB_HSP_PROMOTE_THRESHOLD"); threshold.has_value()) {
+      stlb_promote_hotness_threshold = *threshold;
+    }
+
+    fmt::print("[{}] HSP config: buffer_capacity={} reset_cycles={} promote_threshold={}\n", NAME, stlb_victim_capacity, stlb_hotness_reset_cycles,
+               stlb_promote_hotness_threshold);
+  }
+
   impl_prefetcher_initialize();
   impl_initialize_replacement();
 }

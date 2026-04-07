@@ -115,7 +115,10 @@ public:
 
 private:
   static constexpr std::size_t DEFAULT_STLB_VICTIM_CAPACITY = 4096;
-  static constexpr std::size_t DEFAULT_STLB_HOTNESS_RESET_CYCLES = 10000000;
+  static constexpr std::size_t DEFAULT_STLB_HOTNESS_RESET_CYCLES = 5000000;
+  static constexpr std::size_t DEFAULT_STLB_PROMOTE_HOTNESS_THRESHOLD = 1;
+
+  struct stlb_victim_entry;
 
   bool try_hit(const tag_lookup_type& handle_pkt);
   bool handle_fill(const mshr_type& fill_mshr);
@@ -130,6 +133,7 @@ private:
   uint64_t touch_stlb_hotness(champsim::address v_address);
   uint64_t stlb_hotness_for_vpn(uint64_t vpn) const;
   bool stlb_victim_lookup(const tag_lookup_type& handle_pkt);
+  bool maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, stlb_victim_entry& entry);
   void stlb_victim_insert(const champsim::cache_block& evicted);
 
 public:
@@ -178,6 +182,7 @@ private:
   std::unordered_map<uint64_t, uint64_t> stlb_page_hotness{};
   std::size_t stlb_victim_capacity = 0;
   std::size_t stlb_hotness_reset_cycles = 0;
+  std::size_t stlb_promote_hotness_threshold = 0;
   uint64_t stlb_last_hotness_reset = 0;
 
 public:
@@ -354,6 +359,7 @@ public:
       : champsim::operable(b.m_clock_period),
         stlb_victim_capacity((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_VICTIM_CAPACITY : 0),
         stlb_hotness_reset_cycles((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_HOTNESS_RESET_CYCLES : 0),
+        stlb_promote_hotness_threshold((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_PROMOTE_HOTNESS_THRESHOLD : 0),
         upper_levels(b.m_uls), lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()), NUM_WAY(b.get_num_ways()),
         MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
         FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()),
