@@ -58,30 +58,13 @@ std::optional<std::size_t> read_size_t_env(const char* name)
 
   return static_cast<std::size_t>(value);
 }
-
-std::optional<std::size_t> read_size_t_env(const char* name)
-{
-  const char* raw = std::getenv(name);
-  if (raw == nullptr || *raw == '\0') {
-    return std::nullopt;
-  }
-
-  char* end = nullptr;
-  auto value = std::strtoull(raw, &end, 10);
-  if (end == raw || *end != '\0') {
-    return std::nullopt;
-  }
-
-  return static_cast<std::size_t>(value);
-}
 }
 
 CACHE::CACHE(CACHE&& other)
     : operable(other),
       stlb_victim_cache(std::move(other.stlb_victim_cache)), stlb_page_hotness(std::move(other.stlb_page_hotness)),
-      stlb_victim_capacity(other.stlb_victim_capacity), upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)),
       stlb_victim_capacity(other.stlb_victim_capacity), stlb_hotness_reset_cycles(other.stlb_hotness_reset_cycles),
-      stlb_promote_hotness_threshold(other.stlb_promote_hotness_threshold),
+      stlb_promote_hotness_threshold(other.stlb_promote_hotness_threshold), stlb_hotness_saturation(other.stlb_hotness_saturation),
       stlb_last_hotness_reset(other.stlb_last_hotness_reset), upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)),
       lower_translate(std::move(other.lower_translate)), cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY),
       MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE), HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY),
@@ -128,6 +111,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->stlb_victim_capacity = other.stlb_victim_capacity;
   this->stlb_hotness_reset_cycles = other.stlb_hotness_reset_cycles;
   this->stlb_promote_hotness_threshold = other.stlb_promote_hotness_threshold;
+  this->stlb_hotness_saturation = other.stlb_hotness_saturation;
   this->stlb_last_hotness_reset = other.stlb_last_hotness_reset;
   this->is_itlb_cache = other.is_itlb_cache;
   this->is_dtlb_cache = other.is_dtlb_cache;
@@ -273,8 +257,15 @@ uint64_t CACHE::touch_stlb_hotness(champsim::address v_address)
 
   auto vpn = champsim::page_number{v_address}.to<uint64_t>();
   auto& count = stlb_page_hotness[vpn];
+  if (stlb_hotness_saturation > 0 && count > stlb_hotness_saturation) {
+    count = stlb_hotness_saturation;
+  }
   if (count == 0) {
     count = 1;
+  } else if (stlb_hotness_saturation > 0) {
+    if (count < stlb_hotness_saturation) {
+      ++count;
+    }
   } else if (count != std::numeric_limits<uint64_t>::max()) {
     ++count;
   }
@@ -1109,17 +1100,6 @@ void CACHE::initialize()
       stlb_page_hotness.clear();
     }
 
-    g_active_stlb_victim_capacity = stlb_victim_capacity;
-    fmt::print("[{}] HSP config: buffer_capacity={} halve_policy=dynamic_access\n", NAME, stlb_victim_capacity);
-  }
-
-  if (is_stlb_cache) {
-    if (auto capacity = read_size_t_env("CHAMPSIM_STLB_HSP_BUFFER_CAPACITY"); capacity.has_value()) {
-      stlb_victim_capacity = *capacity;
-      stlb_victim_cache.assign(stlb_victim_capacity, stlb_victim_entry{});
-      stlb_page_hotness.clear();
-    }
-
     if (auto reset_cycles = read_size_t_env("CHAMPSIM_STLB_HSP_RESET_CYCLES"); reset_cycles.has_value()) {
       stlb_hotness_reset_cycles = *reset_cycles;
     }
@@ -1128,8 +1108,13 @@ void CACHE::initialize()
       stlb_promote_hotness_threshold = *threshold;
     }
 
-    fmt::print("[{}] HSP config: buffer_capacity={} reset_cycles={} promote_threshold={}\n", NAME, stlb_victim_capacity, stlb_hotness_reset_cycles,
-               stlb_promote_hotness_threshold);
+    if (auto saturation = read_size_t_env("CHAMPSIM_STLB_HSP_HOTNESS_SAT"); saturation.has_value()) {
+      stlb_hotness_saturation = *saturation;
+    }
+
+    g_active_stlb_victim_capacity = stlb_victim_capacity;
+    fmt::print("[{}] HSP config: buffer_capacity={} halve_policy=dynamic_access reset_cycles={} promote_threshold={} hotness_sat={}\n", NAME,
+               stlb_victim_capacity, stlb_hotness_reset_cycles, stlb_promote_hotness_threshold, stlb_hotness_saturation);
   }
 
   impl_prefetcher_initialize();
