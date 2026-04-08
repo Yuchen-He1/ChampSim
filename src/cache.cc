@@ -59,7 +59,7 @@ CACHE::CACHE(CACHE&& other)
     : operable(other),
       stlb_victim_cache(std::move(other.stlb_victim_cache)), stlb_page_hotness(std::move(other.stlb_page_hotness)),
       stlb_victim_capacity(other.stlb_victim_capacity), stlb_hotness_reset_cycles(other.stlb_hotness_reset_cycles),
-      stlb_promote_hotness_threshold(other.stlb_promote_hotness_threshold),
+      stlb_promote_hotness_threshold(other.stlb_promote_hotness_threshold), stlb_hotness_saturation(other.stlb_hotness_saturation),
       stlb_last_hotness_reset(other.stlb_last_hotness_reset), upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)),
       lower_translate(std::move(other.lower_translate)), cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY),
       MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE), HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY),
@@ -107,6 +107,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->stlb_victim_capacity = other.stlb_victim_capacity;
   this->stlb_hotness_reset_cycles = other.stlb_hotness_reset_cycles;
   this->stlb_promote_hotness_threshold = other.stlb_promote_hotness_threshold;
+  this->stlb_hotness_saturation = other.stlb_hotness_saturation;
   this->stlb_last_hotness_reset = other.stlb_last_hotness_reset;
   this->is_itlb_cache = other.is_itlb_cache;
   this->is_dtlb_cache = other.is_dtlb_cache;
@@ -247,8 +248,15 @@ uint64_t CACHE::touch_stlb_hotness(champsim::address v_address)
 
   auto vpn = champsim::page_number{v_address}.to<uint64_t>();
   auto& count = stlb_page_hotness[vpn];
+  if (stlb_hotness_saturation > 0 && count > stlb_hotness_saturation) {
+    count = stlb_hotness_saturation;
+  }
   if (count == 0) {
     count = 1;
+  } else if (stlb_hotness_saturation > 0) {
+    if (count < stlb_hotness_saturation) {
+      ++count;
+    }
   } else if (count != std::numeric_limits<uint64_t>::max()) {
     ++count;
   }
@@ -1087,8 +1095,12 @@ void CACHE::initialize()
       stlb_promote_hotness_threshold = *threshold;
     }
 
-    fmt::print("[{}] HSP config: buffer_capacity={} reset_cycles={} promote_threshold={}\n", NAME, stlb_victim_capacity, stlb_hotness_reset_cycles,
-               stlb_promote_hotness_threshold);
+    if (auto saturation = read_size_t_env("CHAMPSIM_STLB_HSP_HOTNESS_SAT"); saturation.has_value()) {
+      stlb_hotness_saturation = *saturation;
+    }
+
+    fmt::print("[{}] HSP config: buffer_capacity={} reset_cycles={} promote_threshold={} hotness_sat={}\n", NAME, stlb_victim_capacity,
+               stlb_hotness_reset_cycles, stlb_promote_hotness_threshold, stlb_hotness_saturation);
   }
 
   impl_prefetcher_initialize();
