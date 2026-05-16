@@ -122,6 +122,11 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     }
 
     if (stalled_cycle >= DEADLOCK_CYCLE || livelock_trigger) {
+      fmt::print("ABORT reason: {} stalled_cycle: {} deadlock_cycle: {} livelock_trigger: {}\n",
+                 livelock_trigger ? "livelock" : "deadlock", stalled_cycle, DEADLOCK_CYCLE, livelock_trigger);
+      for (O3_CPU& cpu : env.cpu_view()) {
+        fmt::print("ABORT CPU {} instr: {} cycle: {}\n", cpu.cpu, cpu.sim_instr(), cpu.current_time.time_since_epoch() / cpu.clock_period);
+      }
       std::for_each(std::begin(operables), std::end(operables), [](champsim::operable& c) { c.print_deadlock(); });
       abort();
     }

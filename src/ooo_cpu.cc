@@ -689,14 +689,41 @@ long O3_CPU::handle_memory_return()
   }
 
   auto l1d_it = std::begin(L1D_bus.lower_level->returned);
-  for (champsim::bandwidth l1d_bw{L1D_BANDWIDTH}; l1d_bw.has_remaining() && l1d_it != std::end(L1D_bus.lower_level->returned); l1d_bw.consume(), ++l1d_it) {
-    for (auto& lq_entry : LQ) {
-      if (lq_entry.has_value() && lq_entry->fetch_issued && champsim::block_number{lq_entry->virtual_address} == champsim::block_number{l1d_it->v_address}) {
-        lq_entry->finish(std::begin(ROB), std::end(ROB));
-        lq_entry.reset();
-        ++progress;
+  for (champsim::bandwidth l1d_bw{L1D_BANDWIDTH}; l1d_bw.has_remaining() && l1d_it != std::end(L1D_bus.lower_level->returned);) {
+    bool waiting_for_lq_issue = false;
+
+    if (!std::empty(l1d_it->instr_depend_on_me)) {
+      for (auto instr_id : l1d_it->instr_depend_on_me) {
+        auto lq_match = std::find_if(std::begin(LQ), std::end(LQ), [instr_id](const auto& lq_entry) {
+          return lq_entry.has_value() && lq_entry->instr_id == instr_id;
+        });
+
+        if (lq_match != std::end(LQ)) {
+          if ((*lq_match)->fetch_issued && champsim::block_number{(*lq_match)->virtual_address} == champsim::block_number{l1d_it->v_address}) {
+            (*lq_match)->finish(std::begin(ROB), std::end(ROB));
+            lq_match->reset();
+            ++progress;
+          } else {
+            waiting_for_lq_issue = true;
+          }
+        }
+      }
+    } else {
+      for (auto& lq_entry : LQ) {
+        if (lq_entry.has_value() && lq_entry->fetch_issued && champsim::block_number{lq_entry->virtual_address} == champsim::block_number{l1d_it->v_address}) {
+          lq_entry->finish(std::begin(ROB), std::end(ROB));
+          lq_entry.reset();
+          ++progress;
+        }
       }
     }
+
+    if (waiting_for_lq_issue) {
+      break;
+    }
+
+    l1d_bw.consume();
+    ++l1d_it;
     ++progress;
   }
   L1D_bus.lower_level->returned.erase(std::begin(L1D_bus.lower_level->returned), l1d_it);
