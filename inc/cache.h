@@ -139,6 +139,11 @@ public:
     std::vector<uint64_t> entry_counters{};
   };
 
+  static constexpr std::size_t default_stlb_victim_capacity() { return DEFAULT_STLB_VICTIM_CAPACITY; }
+  static constexpr std::size_t default_stlb_hotness_reset_cycles() { return DEFAULT_STLB_HOTNESS_RESET_CYCLES; }
+  static std::size_t configured_stlb_victim_capacity();
+  static std::size_t configured_stlb_hotness_reset_cycles();
+  static std::size_t active_stlb_victim_capacity();
   static const std::unordered_map<std::string, std::vector<hsp_halve_snapshot>>& get_hsp_halve_history();
 
   using BLOCK = champsim::cache_block;

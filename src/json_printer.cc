@@ -180,8 +180,8 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
 
   nlohmann::json root;
   // Add HSP lookup latency into ROI cycles: log2(HSP entries) * (HSP hits + PTWs)
-  constexpr uint64_t hsp_entries = 4096;
-  const auto hsp_cycles = static_cast<uint64_t>(std::ceil(std::log2(static_cast<double>(hsp_entries))));
+  const auto hsp_entries = CACHE::active_stlb_victim_capacity();
+  const auto hsp_cycles = hsp_entries > 1 ? static_cast<uint64_t>(std::ceil(std::log2(static_cast<double>(hsp_entries)))) : 0;
   uint64_t hsp_extra_cycles = hsp_accesses * hsp_cycles;
   uint64_t roi_cycles_total = 0;
   uint64_t end_cycle = 0;
@@ -194,6 +194,7 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
     }
   }
   root["hsp_lookup_accesses"] = hsp_accesses;
+  root["hsp_lookup_entries"] = hsp_entries;
   root["hsp_lookup_latency_cycles"] = hsp_cycles;
   root["hsp_lookup_extra_cycles"] = hsp_extra_cycles;
   root["roi_cycles_with_hsp"] = roi_cycles_total + hsp_extra_cycles;

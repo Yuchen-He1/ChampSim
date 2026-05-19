@@ -18,8 +18,11 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cerrno>
+#include <cstdlib>
 #include <iomanip>
 #include <numeric>
+#include <optional>
 #include <fmt/core.h>
 
 #include "bandwidth.h"
@@ -36,6 +39,24 @@
 namespace
 {
 std::unordered_map<std::string, std::vector<CACHE::hsp_halve_snapshot>> g_hsp_halve_history;
+std::size_t g_active_stlb_victim_capacity = CACHE::default_stlb_victim_capacity();
+
+std::optional<std::size_t> read_size_t_env(const char* name)
+{
+  const auto* raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return std::nullopt;
+  }
+
+  errno = 0;
+  char* end = nullptr;
+  const auto value = std::strtoull(raw, &end, 10);
+  if (errno != 0 || end == raw || *end != '\0' || value > std::numeric_limits<std::size_t>::max()) {
+    return std::nullopt;
+  }
+
+  return static_cast<std::size_t>(value);
+}
 }
 
 CACHE::CACHE(CACHE&& other)
@@ -212,6 +233,18 @@ void CACHE::record_stlb_victim_halve_snapshot(uint64_t cycle)
 }
 
 const std::unordered_map<std::string, std::vector<CACHE::hsp_halve_snapshot>>& CACHE::get_hsp_halve_history() { return g_hsp_halve_history; }
+
+std::size_t CACHE::configured_stlb_victim_capacity()
+{
+  return read_size_t_env("CHAMPSIM_STLB_HSP_BUFFER_CAPACITY").value_or(DEFAULT_STLB_VICTIM_CAPACITY);
+}
+
+std::size_t CACHE::configured_stlb_hotness_reset_cycles()
+{
+  return read_size_t_env("CHAMPSIM_STLB_HSP_RESET_CYCLES").value_or(DEFAULT_STLB_HOTNESS_RESET_CYCLES);
+}
+
+std::size_t CACHE::active_stlb_victim_capacity() { return g_active_stlb_victim_capacity; }
 
 uint64_t CACHE::touch_stlb_hotness(champsim::address v_address)
 {
@@ -995,6 +1028,21 @@ void CACHE::impl_replacement_final_stats() const { repl_module_pimpl->impl_repla
 
 void CACHE::initialize()
 {
+  if (is_stlb_cache) {
+    if (auto capacity = read_size_t_env("CHAMPSIM_STLB_HSP_BUFFER_CAPACITY"); capacity.has_value()) {
+      stlb_victim_capacity = *capacity;
+      stlb_victim_cache.assign(stlb_victim_capacity, stlb_victim_entry{});
+      stlb_page_hotness.clear();
+    }
+
+    if (auto reset_cycles = read_size_t_env("CHAMPSIM_STLB_HSP_RESET_CYCLES"); reset_cycles.has_value()) {
+      stlb_hotness_reset_cycles = *reset_cycles;
+    }
+
+    g_active_stlb_victim_capacity = stlb_victim_capacity;
+    fmt::print("[{}] HSP config: buffer_capacity={} reset_cycles={}\n", NAME, stlb_victim_capacity, stlb_hotness_reset_cycles);
+  }
+
   impl_prefetcher_initialize();
   impl_initialize_replacement();
 }
