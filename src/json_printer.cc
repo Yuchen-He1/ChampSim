@@ -42,6 +42,9 @@ void to_json(nlohmann::json& j, const CACHE::stats_type& stats)
   statsmap.emplace("prefetch issued", stats.pf_issued);
   statsmap.emplace("useful prefetch", stats.pf_useful);
   statsmap.emplace("useless prefetch", stats.pf_useless);
+  statsmap.emplace("bf queries", stats.bf_queries);
+  statsmap.emplace("bf counters per filter", stats.bf_counters_per_filter);
+  statsmap.emplace("bf total counters", stats.bf_total_counters);
 
   uint64_t total_downstream_demands = stats.mshr_return.total();
   for (std::size_t cpu = 0; cpu < NUM_CPUS; ++cpu)
@@ -185,14 +188,25 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
   uint64_t hsp_extra_cycles = hsp_accesses * hsp_cycles;
   uint64_t roi_cycles_total = 0;
   uint64_t end_cycle = 0;
+  uint64_t bf_queries = 0;
+  uint64_t bf_counters_per_filter = 0;
+  uint64_t bf_total_counters = 0;
   for (const auto& phase : stats) {
     for (const auto& cpu : phase.roi_cpu_stats) {
       roi_cycles_total += cpu.cycles();
+    }
+    for (const auto& cache : phase.roi_cache_stats) {
+      bf_queries += cache.bf_queries;
+      bf_counters_per_filter = std::max<uint64_t>(bf_counters_per_filter, cache.bf_counters_per_filter);
+      bf_total_counters = std::max<uint64_t>(bf_total_counters, cache.bf_total_counters);
     }
     for (const auto& cpu : phase.sim_cpu_stats) {
       end_cycle = std::max<uint64_t>(end_cycle, cpu.end_cycles);
     }
   }
+  root["bf_queries"] = bf_queries;
+  root["bf_counters_per_filter"] = bf_counters_per_filter;
+  root["bf_total_counters"] = bf_total_counters;
   root["hsp_lookup_accesses"] = hsp_accesses;
   root["hsp_lookup_entries"] = hsp_entries;
   root["hsp_lookup_latency_cycles"] = hsp_cycles;

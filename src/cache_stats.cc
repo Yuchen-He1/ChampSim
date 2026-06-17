@@ -9,6 +9,9 @@ cache_stats operator-(cache_stats lhs, cache_stats rhs)
   result.pf_useless = lhs.pf_useless - rhs.pf_useless;
   result.pf_fill = lhs.pf_fill - rhs.pf_fill;
 
+  result.bf_queries = lhs.bf_queries - rhs.bf_queries;
+  result.bf_counters_per_filter = lhs.bf_counters_per_filter;
+  result.bf_total_counters = lhs.bf_total_counters;
 
   result.hits = lhs.hits - rhs.hits;
   result.misses = lhs.misses - rhs.misses;

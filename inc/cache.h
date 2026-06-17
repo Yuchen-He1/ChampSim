@@ -118,8 +118,13 @@ private:
   static constexpr std::size_t DEFAULT_STLB_HOTNESS_RESET_CYCLES = 5000000;
   static constexpr std::size_t DEFAULT_STLB_PROMOTE_HOTNESS_THRESHOLD = 1;
   static constexpr uint64_t DEFAULT_STLB_HOTNESS_SATURATION = 512;
+  static constexpr std::size_t DEFAULT_STLB_HSP_NUM_BUFFERS = 1;
+  static constexpr double DEFAULT_STLB_HSP_BF_FALSE_POSITIVE_RATE = 0.01;
+  static constexpr std::size_t DEFAULT_STLB_HSP_BF_HASHES = 7;
+  static constexpr std::size_t DEFAULT_STLB_HSP_BF_COUNTERS = 4912;
 
   struct stlb_victim_entry;
+  struct counting_bloom_filter;
 
   bool try_hit(const tag_lookup_type& handle_pkt);
   bool handle_fill(const mshr_type& fill_mshr);
@@ -134,8 +139,9 @@ private:
   uint64_t touch_stlb_hotness(champsim::address v_address);
   uint64_t stlb_hotness_for_vpn(uint64_t vpn) const;
   bool stlb_victim_lookup(const tag_lookup_type& handle_pkt);
-  bool maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, stlb_victim_entry& entry);
+  bool maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, stlb_victim_entry& entry, counting_bloom_filter& filter);
   void stlb_victim_insert(const champsim::cache_block& evicted);
+  void configure_stlb_victim_buffers();
 
 public:
   struct hsp_halve_snapshot {
@@ -183,13 +189,32 @@ private:
     uint64_t hotness = 0;
     bool accessed = false;
   };
-  std::vector<stlb_victim_entry> stlb_victim_cache{};
+  struct counting_bloom_filter {
+    std::vector<uint8_t> counters{};
+    std::size_t hash_count = 0;
+
+    void configure(std::size_t counter_count, std::size_t num_hashes);
+    bool query(uint64_t key) const;
+    void insert(uint64_t key);
+    void erase(uint64_t key);
+    [[nodiscard]] std::size_t counter_count() const { return counters.size(); }
+
+  private:
+    [[nodiscard]] std::vector<std::size_t> indices(uint64_t key) const;
+  };
+  std::vector<std::vector<stlb_victim_entry>> stlb_victim_caches{};
+  std::vector<counting_bloom_filter> stlb_victim_filters{};
   std::unordered_map<uint64_t, uint64_t> stlb_page_hotness{};
   std::size_t stlb_victim_capacity = 0;
+  std::size_t stlb_victim_buffer_count = 0;
+  std::size_t stlb_next_insert_buffer = 0;
   std::size_t stlb_hotness_reset_cycles = 0;
   std::size_t stlb_promote_hotness_threshold = 0;
   uint64_t stlb_hotness_saturation = 0;
   uint64_t stlb_last_hotness_reset = 0;
+  double stlb_bloom_false_positive_rate = 0;
+  std::size_t stlb_bloom_hash_count = 0;
+  std::size_t stlb_bloom_counter_count = 0;
 
 public:
   std::vector<channel_type*> upper_levels;
@@ -364,9 +389,13 @@ public:
   explicit CACHE(champsim::cache_builder<champsim::cache_builder_module_type_holder<Ps...>, champsim::cache_builder_module_type_holder<Rs...>> b)
       : champsim::operable(b.m_clock_period),
         stlb_victim_capacity((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_VICTIM_CAPACITY : 0),
+        stlb_victim_buffer_count((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_HSP_NUM_BUFFERS : 0),
         stlb_hotness_reset_cycles((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_HOTNESS_RESET_CYCLES : 0),
         stlb_promote_hotness_threshold((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_PROMOTE_HOTNESS_THRESHOLD : 0),
         stlb_hotness_saturation((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_HOTNESS_SATURATION : 0),
+        stlb_bloom_false_positive_rate((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_HSP_BF_FALSE_POSITIVE_RATE : 0),
+        stlb_bloom_hash_count((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_HSP_BF_HASHES : 0),
+        stlb_bloom_counter_count((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_HSP_BF_COUNTERS : 0),
         upper_levels(b.m_uls), lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()), NUM_WAY(b.get_num_ways()),
         MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
         FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()),
@@ -375,8 +404,8 @@ public:
         is_stlb_cache(b.m_name.find("STLB") != std::string::npos),
         pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)), repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))
   {
-    if (is_stlb_cache && stlb_victim_capacity > 0) {
-      stlb_victim_cache.resize(stlb_victim_capacity);
+    if (is_stlb_cache) {
+      configure_stlb_victim_buffers();
     }
   }
 
