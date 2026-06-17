@@ -115,7 +115,6 @@ public:
 
 private:
   static constexpr std::size_t DEFAULT_STLB_VICTIM_CAPACITY = 4096;
-  static constexpr std::size_t DEFAULT_STLB_HOTNESS_RESET_CYCLES = 10000000;
 
   bool try_hit(const tag_lookup_type& handle_pkt);
   bool handle_fill(const mshr_type& fill_mshr);
@@ -125,7 +124,7 @@ private:
   void finish_translation(const response_type& packet);
 
   void issue_translation(tag_lookup_type& q_entry) const;
-  void maybe_reset_stlb_hotness();
+  void maybe_halve_stlb_victim_hotness_by_access(uint64_t cycle);
   void record_stlb_victim_halve_snapshot(uint64_t cycle);
   uint64_t touch_stlb_hotness(champsim::address v_address);
   uint64_t stlb_hotness_for_vpn(uint64_t vpn) const;
@@ -140,9 +139,7 @@ public:
   };
 
   static constexpr std::size_t default_stlb_victim_capacity() { return DEFAULT_STLB_VICTIM_CAPACITY; }
-  static constexpr std::size_t default_stlb_hotness_reset_cycles() { return DEFAULT_STLB_HOTNESS_RESET_CYCLES; }
   static std::size_t configured_stlb_victim_capacity();
-  static std::size_t configured_stlb_hotness_reset_cycles();
   static std::size_t active_stlb_victim_capacity();
   static const std::unordered_map<std::string, std::vector<hsp_halve_snapshot>>& get_hsp_halve_history();
 
@@ -178,12 +175,11 @@ private:
     champsim::address data{};
     uint32_t pf_metadata = 0;
     uint64_t hotness = 0;
+    bool accessed = false;
   };
   std::vector<stlb_victim_entry> stlb_victim_cache{};
   std::unordered_map<uint64_t, uint64_t> stlb_page_hotness{};
   std::size_t stlb_victim_capacity = 0;
-  std::size_t stlb_hotness_reset_cycles = 0;
-  uint64_t stlb_last_hotness_reset = 0;
 
 public:
   std::vector<channel_type*> upper_levels;
@@ -358,7 +354,6 @@ public:
   explicit CACHE(champsim::cache_builder<champsim::cache_builder_module_type_holder<Ps...>, champsim::cache_builder_module_type_holder<Rs...>> b)
       : champsim::operable(b.m_clock_period),
         stlb_victim_capacity((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_VICTIM_CAPACITY : 0),
-        stlb_hotness_reset_cycles((b.m_name.find("STLB") != std::string::npos) ? DEFAULT_STLB_HOTNESS_RESET_CYCLES : 0),
         upper_levels(b.m_uls), lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()), NUM_WAY(b.get_num_ways()),
         MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
         FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()),

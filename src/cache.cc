@@ -62,15 +62,13 @@ std::optional<std::size_t> read_size_t_env(const char* name)
 CACHE::CACHE(CACHE&& other)
     : operable(other),
       stlb_victim_cache(std::move(other.stlb_victim_cache)), stlb_page_hotness(std::move(other.stlb_page_hotness)),
-      stlb_victim_capacity(other.stlb_victim_capacity), stlb_hotness_reset_cycles(other.stlb_hotness_reset_cycles),
-      stlb_last_hotness_reset(other.stlb_last_hotness_reset), upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)),
+      stlb_victim_capacity(other.stlb_victim_capacity), upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)),
       lower_translate(std::move(other.lower_translate)), cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY),
       MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE), HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY),
-      OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG), MAX_FILL(other.MAX_FILL),
-      prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
-      pref_activate_mask(std::move(other.pref_activate_mask)), is_itlb_cache(other.is_itlb_cache), is_dtlb_cache(other.is_dtlb_cache),
-      is_stlb_cache(other.is_stlb_cache), sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
-      pref_module_pimpl(std::move(other.pref_module_pimpl)), repl_module_pimpl(std::move(other.repl_module_pimpl))
+      OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG), MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load),
+      match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch), pref_activate_mask(std::move(other.pref_activate_mask)),
+      is_itlb_cache(other.is_itlb_cache), is_dtlb_cache(other.is_dtlb_cache), is_stlb_cache(other.is_stlb_cache), sim_stats(std::move(other.sim_stats)),
+      roi_stats(std::move(other.roi_stats)), pref_module_pimpl(std::move(other.pref_module_pimpl)), repl_module_pimpl(std::move(other.repl_module_pimpl))
 {
   pref_module_pimpl->bind(this);
   repl_module_pimpl->bind(this);
@@ -108,8 +106,6 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->stlb_victim_cache = std::move(other.stlb_victim_cache);
   this->stlb_page_hotness = std::move(other.stlb_page_hotness);
   this->stlb_victim_capacity = other.stlb_victim_capacity;
-  this->stlb_hotness_reset_cycles = other.stlb_hotness_reset_cycles;
-  this->stlb_last_hotness_reset = other.stlb_last_hotness_reset;
   this->is_itlb_cache = other.is_itlb_cache;
   this->is_dtlb_cache = other.is_dtlb_cache;
   this->is_stlb_cache = other.is_stlb_cache;
@@ -193,14 +189,15 @@ auto CACHE::matches_address(champsim::address addr) const
   };
 }
 
-void CACHE::maybe_reset_stlb_hotness()
+void CACHE::maybe_halve_stlb_victim_hotness_by_access(uint64_t cycle)
 {
-  if (!is_stlb_cache || stlb_hotness_reset_cycles == 0) {
+  if (!is_stlb_cache || stlb_victim_capacity == 0) {
     return;
   }
 
-  auto cycle = static_cast<uint64_t>(current_time.time_since_epoch() / clock_period);
-  if (cycle - stlb_last_hotness_reset < stlb_hotness_reset_cycles) {
+  const auto accessed_entries =
+      static_cast<std::size_t>(std::count_if(stlb_victim_cache.begin(), stlb_victim_cache.end(), [](const auto& entry) { return entry.accessed; }));
+  if (accessed_entries * 4 <= stlb_victim_capacity * 3) {
     return;
   }
 
@@ -209,9 +206,9 @@ void CACHE::maybe_reset_stlb_hotness()
   }
   for (auto& entry : stlb_victim_cache) {
     entry.hotness /= 2;
+    entry.accessed = false;
   }
   record_stlb_victim_halve_snapshot(cycle);
-  stlb_last_hotness_reset = cycle;
 }
 
 void CACHE::record_stlb_victim_halve_snapshot(uint64_t cycle)
@@ -239,20 +236,12 @@ std::size_t CACHE::configured_stlb_victim_capacity()
   return read_size_t_env("CHAMPSIM_STLB_HSP_BUFFER_CAPACITY").value_or(DEFAULT_STLB_VICTIM_CAPACITY);
 }
 
-std::size_t CACHE::configured_stlb_hotness_reset_cycles()
-{
-  return read_size_t_env("CHAMPSIM_STLB_HSP_RESET_CYCLES").value_or(DEFAULT_STLB_HOTNESS_RESET_CYCLES);
-}
-
 std::size_t CACHE::active_stlb_victim_capacity() { return g_active_stlb_victim_capacity; }
 
 uint64_t CACHE::touch_stlb_hotness(champsim::address v_address)
 {
   if (!is_stlb_cache) {
     return 0;
-  }
-  if (stlb_hotness_reset_cycles != 0) {
-    maybe_reset_stlb_hotness();
   }
 
   auto vpn = champsim::page_number{v_address}.to<uint64_t>();
@@ -263,7 +252,10 @@ uint64_t CACHE::touch_stlb_hotness(champsim::address v_address)
     ++count;
   }
 
-  return count;
+  auto cycle = static_cast<uint64_t>(current_time.time_since_epoch() / clock_period);
+  maybe_halve_stlb_victim_hotness_by_access(cycle);
+
+  return stlb_hotness_for_vpn(vpn);
 }
 
 uint64_t CACHE::stlb_hotness_for_vpn(uint64_t vpn) const
@@ -281,6 +273,7 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
   auto vpn = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
   for (auto& entry : stlb_victim_cache) {
     if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
+      entry.accessed = true;
       entry.hotness = touch_stlb_hotness(handle_pkt.v_address);
       response_type response{handle_pkt.address, handle_pkt.v_address, entry.data, entry.pf_metadata, handle_pkt.instr_depend_on_me};
       auto cycle = static_cast<uint64_t>(current_time.time_since_epoch() / clock_period);
@@ -326,7 +319,7 @@ void CACHE::stlb_victim_insert(const champsim::cache_block& evicted)
                                  [](const auto& a, const auto& b) { return a.hotness < b.hotness; });
   }
 
-  *victim_it = stlb_victim_entry{true, evicted.address, evicted.v_address, evicted.data, evicted.pf_metadata, hotness};
+  *victim_it = stlb_victim_entry{true, evicted.address, evicted.v_address, evicted.data, evicted.pf_metadata, hotness, false};
 }
 
 template <typename T>
@@ -509,9 +502,6 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     if (stlb_victim_lookup(handle_pkt)) {
       return true;
     }
-  }
-  if (is_stlb_cache) {
-    touch_stlb_hotness(handle_pkt.v_address);
   }
 
   mshr_type to_allocate{handle_pkt, current_time};
@@ -1035,12 +1025,8 @@ void CACHE::initialize()
       stlb_page_hotness.clear();
     }
 
-    if (auto reset_cycles = read_size_t_env("CHAMPSIM_STLB_HSP_RESET_CYCLES"); reset_cycles.has_value()) {
-      stlb_hotness_reset_cycles = *reset_cycles;
-    }
-
     g_active_stlb_victim_capacity = stlb_victim_capacity;
-    fmt::print("[{}] HSP config: buffer_capacity={} reset_cycles={}\n", NAME, stlb_victim_capacity, stlb_hotness_reset_cycles);
+    fmt::print("[{}] HSP config: buffer_capacity={} halve_policy=dynamic_access\n", NAME, stlb_victim_capacity);
   }
 
   impl_prefetcher_initialize();
