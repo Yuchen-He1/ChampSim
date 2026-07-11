@@ -133,7 +133,7 @@
     "wq_size": 32,
     "pq_size": 0,
     "mshr_size": 16,
-    "latency": 40,
+    "latency": 12,
     "max_tag_check": 1,
     "max_fill": 1,
     "prefetch_as_load": false,
