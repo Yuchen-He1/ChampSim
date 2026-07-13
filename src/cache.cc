@@ -92,8 +92,8 @@ std::optional<double> read_double_env(const char* name)
 CACHE::CACHE(CACHE&& other)
     : operable(other),
       stlb_victim_caches(std::move(other.stlb_victim_caches)), stlb_victim_filters(std::move(other.stlb_victim_filters)),
-      stlb_page_hotness(std::move(other.stlb_page_hotness)), stlb_victim_capacity(other.stlb_victim_capacity),
-      stlb_victim_buffer_count(other.stlb_victim_buffer_count), stlb_next_insert_buffer(other.stlb_next_insert_buffer),
+      stlb_victim_capacity(other.stlb_victim_capacity), stlb_victim_buffer_count(other.stlb_victim_buffer_count),
+      stlb_next_insert_buffer(other.stlb_next_insert_buffer),
       stlb_hotness_reset_cycles(other.stlb_hotness_reset_cycles),
       stlb_promote_hotness_threshold(other.stlb_promote_hotness_threshold), stlb_hotness_saturation(other.stlb_hotness_saturation),
       stlb_last_hotness_reset(other.stlb_last_hotness_reset), stlb_bloom_false_positive_rate(other.stlb_bloom_false_positive_rate),
@@ -141,7 +141,6 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->pref_activate_mask = std::move(other.pref_activate_mask);
   this->stlb_victim_caches = std::move(other.stlb_victim_caches);
   this->stlb_victim_filters = std::move(other.stlb_victim_filters);
-  this->stlb_page_hotness = std::move(other.stlb_page_hotness);
   this->stlb_victim_capacity = other.stlb_victim_capacity;
   this->stlb_victim_buffer_count = other.stlb_victim_buffer_count;
   this->stlb_next_insert_buffer = other.stlb_next_insert_buffer;
@@ -322,8 +321,6 @@ void CACHE::maybe_halve_stlb_victim_hotness_by_access(uint64_t cycle)
         continue;
       }
 
-      auto vpn = champsim::page_number{entry.v_address}.to<uint64_t>();
-      stlb_page_hotness[vpn] = entry.hotness;
     }
   }
   record_stlb_victim_halve_snapshot(cycle);
@@ -358,14 +355,13 @@ std::size_t CACHE::configured_stlb_victim_capacity()
 
 std::size_t CACHE::active_stlb_victim_capacity() { return g_active_stlb_victim_capacity; }
 
-uint64_t CACHE::touch_stlb_hotness(champsim::address v_address)
+uint64_t CACHE::touch_stlb_hotness(stlb_victim_entry& entry)
 {
   if (!is_stlb_cache) {
     return 0;
   }
 
-  auto vpn = champsim::page_number{v_address}.to<uint64_t>();
-  auto& count = stlb_page_hotness[vpn];
+  auto& count = entry.hotness;
   if (stlb_hotness_saturation > 0 && count > stlb_hotness_saturation) {
     count = stlb_hotness_saturation;
   }
@@ -382,13 +378,7 @@ uint64_t CACHE::touch_stlb_hotness(champsim::address v_address)
   auto cycle = static_cast<uint64_t>(current_time.time_since_epoch() / clock_period);
   maybe_halve_stlb_victim_hotness_by_access(cycle);
 
-  return stlb_hotness_for_vpn(vpn);
-}
-
-uint64_t CACHE::stlb_hotness_for_vpn(uint64_t vpn) const
-{
-  auto it = stlb_page_hotness.find(vpn);
-  return it == stlb_page_hotness.end() ? 0 : it->second;
+  return entry.hotness;
 }
 
 bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
@@ -405,15 +395,14 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
     }
 
     auto& buffer = stlb_victim_caches[buffer_idx];
-    auto& filter = stlb_victim_filters[buffer_idx];
     for (auto& entry : buffer) {
       if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
         entry.accessed = true;
-        entry.hotness = touch_stlb_hotness(handle_pkt.v_address);
+        entry.hotness = touch_stlb_hotness(entry);
         response_type response{handle_pkt.address, handle_pkt.v_address, entry.data, entry.pf_metadata, handle_pkt.instr_depend_on_me};
         auto cycle = static_cast<uint64_t>(current_time.time_since_epoch() / clock_period);
         page_stats::hsp_hit(handle_pkt.cpu, vpn, is_itlb_cache, cycle);
-        maybe_promote_stlb_victim_entry(handle_pkt, entry, filter);
+        maybe_promote_stlb_victim_entry(handle_pkt, entry);
         for (auto* ret : handle_pkt.to_return) {
           ret->push_back(response);
         }
@@ -426,7 +415,7 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
   return false;
 }
 
-bool CACHE::maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, stlb_victim_entry& entry, counting_bloom_filter& filter)
+bool CACHE::maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, stlb_victim_entry& entry)
 {
   if (!entry.valid) {
     return false;
@@ -443,14 +432,10 @@ bool CACHE::maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, s
                                                 handle_pkt.type));
   }
 
-  champsim::cache_block evicted_stlb_entry{};
   const bool has_stlb_victim = (way != set_end && way->valid);
-  if (has_stlb_victim) {
-    evicted_stlb_entry = *way;
-  }
+  const champsim::cache_block evicted_stlb_entry = has_stlb_victim ? *way : champsim::cache_block{};
 
   if (way != set_end) {
-    const auto promoted_vpn = champsim::page_number{entry.v_address}.to<uint64_t>();
     champsim::cache_block promoted{};
     promoted.valid = true;
     promoted.address = entry.address;
@@ -462,23 +447,10 @@ bool CACHE::maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, s
                                 handle_pkt.type);
 
     if (has_stlb_victim) {
-      auto vpn = champsim::page_number{evicted_stlb_entry.v_address}.to<uint64_t>();
-      auto hotness = stlb_hotness_for_vpn(vpn);
-
-      // Swap-style promote: the evicted STLB entry reuses the current HSP slot.
-      filter.erase(promoted_vpn);
-      entry.address = evicted_stlb_entry.address;
-      entry.v_address = evicted_stlb_entry.v_address;
-      entry.data = evicted_stlb_entry.data;
-      entry.pf_metadata = evicted_stlb_entry.pf_metadata;
-      entry.hotness = hotness;
-      entry.accessed = false;
-      filter.insert(vpn);
-    } else {
-      // Promote-back keeps global page hot counter, but removes this HSP copy.
-      filter.erase(promoted_vpn);
-      entry.valid = false;
-      entry.accessed = false;
+      // Inclusive HSP: keep the promoted entry and insert the STLB victim normally.
+      // The insertion may evict this entry if it has the minimum hotness, so do not
+      // access entry after this call.
+      stlb_victim_insert(evicted_stlb_entry);
     }
     return true;
   }
@@ -493,21 +465,25 @@ void CACHE::stlb_victim_insert(const champsim::cache_block& evicted)
   }
 
   auto vpn = champsim::page_number{evicted.v_address}.to<uint64_t>();
-  auto hotness = stlb_hotness_for_vpn(vpn);
+
+  // An STLB entry may already have an inclusive HSP copy in any buffer. Refresh
+  // its translation data without changing hotness, which only counts HSP hits.
+  for (std::size_t buffer_idx = 0; buffer_idx < stlb_victim_caches.size(); ++buffer_idx) {
+    auto& existing_buffer = stlb_victim_caches[buffer_idx];
+    for (auto& entry : existing_buffer) {
+      if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
+        entry.address = evicted.address;
+        entry.v_address = evicted.v_address;
+        entry.data = evicted.data;
+        entry.pf_metadata = evicted.pf_metadata;
+        return;
+      }
+    }
+  }
+
   auto& buffer = stlb_victim_caches[stlb_next_insert_buffer % stlb_victim_caches.size()];
   auto& filter = stlb_victim_filters[stlb_next_insert_buffer % stlb_victim_filters.size()];
   stlb_next_insert_buffer = (stlb_next_insert_buffer + 1) % stlb_victim_caches.size();
-
-  for (auto& entry : buffer) {
-    if (entry.valid && champsim::page_number{entry.v_address}.to<uint64_t>() == vpn) {
-      entry.address = evicted.address;
-      entry.v_address = evicted.v_address;
-      entry.data = evicted.data;
-      entry.pf_metadata = evicted.pf_metadata;
-      entry.hotness = hotness;
-      return;
-    }
-  }
 
   auto victim_it = std::find_if(buffer.begin(), buffer.end(), [](const auto& entry) { return !entry.valid; });
   if (victim_it == buffer.end()) {
@@ -517,12 +493,11 @@ void CACHE::stlb_victim_insert(const champsim::cache_block& evicted)
 
   if (victim_it != buffer.end() && victim_it->valid) {
     auto evicted_vpn = champsim::page_number{victim_it->v_address}.to<uint64_t>();
-    // Real HSP eviction should clear global page hot counter for that VPN.
-    stlb_page_hotness[evicted_vpn] = 0;
     filter.erase(evicted_vpn);
   }
 
-  *victim_it = stlb_victim_entry{true, evicted.address, evicted.v_address, evicted.data, evicted.pf_metadata, hotness, false};
+  // A page without an existing HSP copy starts with zero hotness.
+  *victim_it = stlb_victim_entry{true, evicted.address, evicted.v_address, evicted.data, evicted.pf_metadata, 0, false};
   filter.insert(vpn);
 }
 
@@ -1255,7 +1230,6 @@ void CACHE::initialize()
       stlb_bloom_counter_count = *counters;
     }
 
-    stlb_page_hotness.clear();
     configure_stlb_victim_buffers();
     g_active_stlb_victim_capacity = stlb_victim_capacity;
     sim_stats.bf_counters_per_filter = stlb_bloom_counter_count;

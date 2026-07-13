@@ -136,10 +136,9 @@ private:
   void issue_translation(tag_lookup_type& q_entry) const;
   void maybe_halve_stlb_victim_hotness_by_access(uint64_t cycle);
   void record_stlb_victim_halve_snapshot(uint64_t cycle);
-  uint64_t touch_stlb_hotness(champsim::address v_address);
-  uint64_t stlb_hotness_for_vpn(uint64_t vpn) const;
+  uint64_t touch_stlb_hotness(stlb_victim_entry& entry);
   bool stlb_victim_lookup(const tag_lookup_type& handle_pkt);
-  bool maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, stlb_victim_entry& entry, counting_bloom_filter& filter);
+  bool maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, stlb_victim_entry& entry);
   void stlb_victim_insert(const champsim::cache_block& evicted);
   void configure_stlb_victim_buffers();
 
@@ -204,7 +203,6 @@ private:
   };
   std::vector<std::vector<stlb_victim_entry>> stlb_victim_caches{};
   std::vector<counting_bloom_filter> stlb_victim_filters{};
-  std::unordered_map<uint64_t, uint64_t> stlb_page_hotness{};
   std::size_t stlb_victim_capacity = 0;
   std::size_t stlb_victim_buffer_count = 0;
   std::size_t stlb_next_insert_buffer = 0;
