@@ -33,6 +33,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "address.h"
@@ -187,7 +188,6 @@ private:
     champsim::address data{};
     uint32_t pf_metadata = 0;
     uint64_t hotness = 0;
-    bool accessed = false;
   };
   struct counting_bloom_filter {
     std::vector<uint8_t> counters{};
@@ -205,6 +205,7 @@ private:
   std::vector<std::vector<stlb_victim_entry>> stlb_victim_caches{};
   std::vector<counting_bloom_filter> stlb_victim_filters{};
   std::unordered_map<uint64_t, uint64_t> stlb_page_hotness{};
+  std::unordered_set<uint64_t> stlb_accessed_vpns_since_halve{};
   std::size_t stlb_victim_capacity = 0;
   std::size_t stlb_victim_buffer_count = 0;
   std::size_t stlb_next_insert_buffer = 0;
