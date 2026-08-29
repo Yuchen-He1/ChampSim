@@ -33,7 +33,6 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "address.h"
@@ -136,7 +135,7 @@ private:
 
   void issue_translation(tag_lookup_type& q_entry) const;
   void maybe_halve_stlb_victim_hotness_by_access(uint64_t cycle);
-  void record_stlb_victim_halve_snapshot(uint64_t cycle);
+  void record_stlb_victim_halve_snapshot(uint64_t cycle, std::size_t buffer_index);
   uint64_t touch_stlb_hotness(champsim::address v_address);
   uint64_t stlb_hotness_for_vpn(uint64_t vpn) const;
   bool stlb_victim_lookup(const tag_lookup_type& handle_pkt);
@@ -147,6 +146,7 @@ private:
 public:
   struct hsp_halve_snapshot {
     uint64_t cycle = 0;
+    std::size_t buffer_index = 0;
     std::vector<uint64_t> entry_vpns{};
     std::vector<uint64_t> entry_counters{};
   };
@@ -204,8 +204,10 @@ private:
   };
   std::vector<std::vector<stlb_victim_entry>> stlb_victim_caches{};
   std::vector<counting_bloom_filter> stlb_victim_filters{};
+  // Access bits belong to physical HSP slots, not to the entries occupying
+  // those slots. Promotion/replacement must therefore leave them unchanged.
+  std::vector<std::vector<bool>> stlb_victim_accessed{};
   std::unordered_map<uint64_t, uint64_t> stlb_page_hotness{};
-  std::unordered_set<uint64_t> stlb_accessed_vpns_since_halve{};
   std::size_t stlb_victim_capacity = 0;
   std::size_t stlb_victim_buffer_count = 0;
   std::size_t stlb_next_insert_buffer = 0;

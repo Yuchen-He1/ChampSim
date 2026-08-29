@@ -217,7 +217,10 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
   for (const auto& [cache_name, snapshots] : CACHE::get_hsp_halve_history()) {
     nlohmann::json snapshot_json = nlohmann::json::array();
     for (const auto& snapshot : snapshots) {
-      snapshot_json.push_back(nlohmann::json{{"cycle", snapshot.cycle}, {"entry_vpns", snapshot.entry_vpns}, {"entry_counters", snapshot.entry_counters}});
+      snapshot_json.push_back(nlohmann::json{{"cycle", snapshot.cycle},
+                                             {"buffer_index", snapshot.buffer_index},
+                                             {"entry_vpns", snapshot.entry_vpns},
+                                             {"entry_counters", snapshot.entry_counters}});
     }
     hsp_halve_history_json[cache_name] = std::move(snapshot_json);
   }
