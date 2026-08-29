@@ -127,8 +127,8 @@
   },
   
   "L3TLB": {
-    "sets": 4096,
-    "ways": 1,
+    "sets": 256,
+    "ways": 16,
     "rq_size": 32,
     "wq_size": 32,
     "pq_size": 0,
