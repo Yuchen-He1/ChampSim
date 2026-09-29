@@ -10,6 +10,11 @@ cache_stats operator-(cache_stats lhs, cache_stats rhs)
   result.pf_fill = lhs.pf_fill - rhs.pf_fill;
 
   result.bf_queries = lhs.bf_queries - rhs.bf_queries;
+  result.bf_positive_queries = lhs.bf_positive_queries - rhs.bf_positive_queries;
+  result.bf_false_positive_queries = lhs.bf_false_positive_queries - rhs.bf_false_positive_queries;
+  result.hsp_timed_hits = lhs.hsp_timed_hits - rhs.hsp_timed_hits;
+  result.hsp_queue_full = lhs.hsp_queue_full - rhs.hsp_queue_full;
+  result.ptw_requests_issued = lhs.ptw_requests_issued - rhs.ptw_requests_issued;
   result.bf_counters_per_filter = lhs.bf_counters_per_filter;
   result.bf_total_counters = lhs.bf_total_counters;
 

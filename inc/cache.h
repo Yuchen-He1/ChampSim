@@ -73,6 +73,7 @@ class CACHE : public champsim::operable
     bool skip_fill;
     bool is_translated;
     bool translate_issued = false;
+    bool stlb_miss_checked = false;
 
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
@@ -129,6 +130,9 @@ private:
   bool try_hit(const tag_lookup_type& handle_pkt);
   bool handle_fill(const mshr_type& fill_mshr);
   bool handle_miss(const tag_lookup_type& handle_pkt);
+  bool handle_miss_to_lower(const tag_lookup_type& handle_pkt);
+  bool enqueue_hsp(const tag_lookup_type& handle_pkt);
+  long operate_hsp(champsim::bandwidth& fill_bw);
   bool handle_write(const tag_lookup_type& handle_pkt);
   void finish_packet(const response_type& packet);
   void finish_translation(const response_type& packet);
@@ -154,6 +158,9 @@ public:
   static constexpr std::size_t default_stlb_victim_capacity() { return DEFAULT_STLB_VICTIM_CAPACITY; }
   static std::size_t configured_stlb_victim_capacity();
   static std::size_t active_stlb_victim_capacity();
+  static bool active_hsp_timing();
+  static std::size_t active_hsp_bf_latency();
+  static std::size_t active_hsp_search_latency();
   static const std::unordered_map<std::string, std::vector<hsp_halve_snapshot>>& get_hsp_halve_history();
 
   using BLOCK = champsim::cache_block;
@@ -218,6 +225,21 @@ private:
   double stlb_bloom_false_positive_rate = 0;
   std::size_t stlb_bloom_hash_count = 0;
   std::size_t stlb_bloom_counter_count = 0;
+  bool hsp_timing_enabled = true;
+  std::size_t hsp_bf_latency = 1;
+  std::size_t hsp_search_latency = 0;
+  struct hsp_pending_entry {
+    tag_lookup_type request;
+    champsim::chrono::clock::time_point ready;
+    bool bf_done = false;
+    bool positive = false;
+    bool hit = false;
+    stlb_victim_entry result{};
+    std::size_t buffer = 0;
+    std::size_t slot = 0;
+    std::vector<std::pair<access_type, uint32_t>> waiters{};
+  };
+  std::deque<hsp_pending_entry> hsp_pending{};
 
 public:
   std::vector<channel_type*> upper_levels;

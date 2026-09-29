@@ -43,6 +43,11 @@ void to_json(nlohmann::json& j, const CACHE::stats_type& stats)
   statsmap.emplace("useful prefetch", stats.pf_useful);
   statsmap.emplace("useless prefetch", stats.pf_useless);
   statsmap.emplace("bf queries", stats.bf_queries);
+  statsmap.emplace("bf positive queries", stats.bf_positive_queries);
+  statsmap.emplace("bf false positive queries", stats.bf_false_positive_queries);
+  statsmap.emplace("hsp timed hits", stats.hsp_timed_hits);
+  statsmap.emplace("hsp queue full attempts", stats.hsp_queue_full);
+  statsmap.emplace("ptw requests issued", stats.ptw_requests_issued);
   statsmap.emplace("bf counters per filter", stats.bf_counters_per_filter);
   statsmap.emplace("bf total counters", stats.bf_total_counters);
 
@@ -185,7 +190,8 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
   // Add HSP lookup latency into ROI cycles: log2(HSP entries) * (HSP hits + PTWs)
   const auto hsp_entries = CACHE::active_stlb_victim_capacity();
   const auto hsp_cycles = hsp_entries > 1 ? static_cast<uint64_t>(std::ceil(std::log2(static_cast<double>(hsp_entries)))) : 0;
-  uint64_t hsp_extra_cycles = hsp_accesses * hsp_cycles;
+  const bool internal_hsp_latency = CACHE::active_hsp_timing();
+  uint64_t hsp_extra_cycles = internal_hsp_latency ? 0 : hsp_accesses * hsp_cycles;
   uint64_t roi_cycles_total = 0;
   uint64_t end_cycle = 0;
   uint64_t bf_queries = 0;
@@ -209,7 +215,9 @@ void champsim::json_printer::print(std::vector<phase_stats>& stats)
   root["bf_total_counters"] = bf_total_counters;
   root["hsp_lookup_accesses"] = hsp_accesses;
   root["hsp_lookup_entries"] = hsp_entries;
-  root["hsp_lookup_latency_cycles"] = hsp_cycles;
+  root["hsp_latency_model"] = internal_hsp_latency ? "internal" : "offline";
+  root["bf_lookup_latency_cycles"] = CACHE::active_hsp_bf_latency();
+  root["hsp_lookup_latency_cycles"] = internal_hsp_latency ? CACHE::active_hsp_search_latency() : hsp_cycles;
   root["hsp_lookup_extra_cycles"] = hsp_extra_cycles;
   root["roi_cycles_with_hsp"] = roi_cycles_total + hsp_extra_cycles;
   root["end_cycle"] = end_cycle;
