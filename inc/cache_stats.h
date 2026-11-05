@@ -20,6 +20,7 @@ struct cache_stats {
 
   // HSP (STLB victim) lookup stats
   uint64_t bf_queries = 0;
+  uint64_t bf_false_positives = 0;
   uint64_t bf_counters_per_filter = 0;
   uint64_t bf_total_counters = 0;
 

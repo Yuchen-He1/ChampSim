@@ -405,12 +405,14 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
   }
 
   ++sim_stats.bf_queries;
+  bool any_bloom_positive = false;
   auto vpn = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
   for (std::size_t buffer_idx = 0; buffer_idx < stlb_victim_caches.size(); ++buffer_idx) {
     if (buffer_idx >= stlb_victim_filters.size() || !stlb_victim_filters[buffer_idx].query(vpn)) {
       continue;
     }
 
+    any_bloom_positive = true;
     auto& buffer = stlb_victim_caches[buffer_idx];
     auto& filter = stlb_victim_filters[buffer_idx];
     for (std::size_t entry_idx = 0; entry_idx < buffer.size(); ++entry_idx) {
@@ -431,6 +433,10 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
     }
   }
 
+  // Parallel filters: a true hit in any buffer covers positives elsewhere.
+  if (any_bloom_positive) {
+    ++sim_stats.bf_false_positives;
+  }
   return false;
 }
 
@@ -1328,6 +1334,7 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.pf_useless = sim_stats.pf_useless;
   roi_stats.pf_fill = sim_stats.pf_fill;
   roi_stats.bf_queries = sim_stats.bf_queries;
+  roi_stats.bf_false_positives = sim_stats.bf_false_positives;
   roi_stats.bf_counters_per_filter = sim_stats.bf_counters_per_filter;
   roi_stats.bf_total_counters = sim_stats.bf_total_counters;
 
