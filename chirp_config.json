@@ -1,0 +1,6 @@
+{
+  "executable_name": "champsim_chirp",
+  "STLB": {
+    "replacement": "chirp"
+  }
+}

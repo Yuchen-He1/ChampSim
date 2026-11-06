@@ -26,6 +26,7 @@
 
 #include "cache.h"
 #include "champsim.h"
+#include "control_flow_history.h"
 #include "deadlock.h"
 #include "instruction.h"
 #include "util/span.h"
@@ -73,6 +74,8 @@ long O3_CPU::operate()
 
 void O3_CPU::initialize()
 {
+  champsim::cpu_control_flow_history[cpu] = {};
+
   // BRANCH PREDICTOR & BTB
   impl_initialize_branch_predictor();
   impl_initialize_btb();
@@ -163,6 +166,10 @@ bool O3_CPU::do_predict_branch(ooo_model_instr& arch_instr)
     if constexpr (champsim::debug_print) {
       fmt::print("[BRANCH] instr_id: {} ip: {} taken: {}\n", arch_instr.instr_id, arch_instr.ip, arch_instr.branch_taken);
     }
+
+    champsim::cpu_control_flow_history[cpu].observe(
+        arch_instr.ip.to<uint64_t>(), arch_instr.branch == BRANCH_CONDITIONAL,
+        arch_instr.branch == BRANCH_INDIRECT || arch_instr.branch == BRANCH_INDIRECT_CALL || arch_instr.branch == BRANCH_RETURN);
 
     // call code prefetcher every time the branch predictor is used
     l1i->impl_prefetcher_branch_operate(arch_instr.ip, arch_instr.branch, predicted_branch_target);
