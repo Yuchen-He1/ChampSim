@@ -38,3 +38,21 @@ The runtime script ``scripts/run_hsp_counter_variants.py`` is distributed as
 trace directories, skips missing traces, and validates counter-width metadata.
 It runs four SSSP inputs and five PR inputs; it does not launch default baselines.
 All workloads use 50M warmup and a 1B ROI cap except SSSP Wiki (924,096,728).
+
+BF environment configuration
+----------------------------
+
+The package includes ``bf_env.sh`` (tracked as ``scripts/hsp_bf_env.sh``).
+Edit and source it with ``. ./bf_env.sh`` before invoking ``run.py``. It exports
+``CHAMPSIM_STLB_HSP_BF_HASHES``, ``CHAMPSIM_STLB_HSP_BF_COUNTERS``,
+``CHAMPSIM_STLB_HSP_BF_FALSE_POSITIVE_RATE`` and
+``CHAMPSIM_STLB_HSP_BF_LATENCY``. Sourcing overwrites these four variables;
+one-off overrides may be exported after sourcing. Running it with ``bash``
+instead of sourcing does not modify the caller's environment.
+
+The runtime script preserves these four BF overrides, validates them, and records
+them in both dry-run output and each result manifest/log. Other HSP settings
+remain fixed for the selected experiment variant. Counter width still requires
+choosing the appropriate compiled binary. No recompile is needed to change
+hash count, counter count or BF latency. The target FP setting does not force
+the measured FP rate when counter and hash counts are explicitly specified.

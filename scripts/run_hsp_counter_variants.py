@@ -23,6 +23,28 @@ WIDTHS = {
     'hsp4_bf4': dict(hsp_bits=4, bf_bits=4, hotness_max=15),
 }
 
+def bloom_filter_environment():
+    """Preserve only the supported BF overrides; isolate other HSP settings."""
+    values = {}
+    for suffix, default, minimum in [('HASHES', '7', 1), ('COUNTERS', '4912', 1), ('LATENCY', '1', 0)]:
+        key = 'CHAMPSIM_STLB_HSP_BF_' + suffix
+        try:
+            value = int(os.environ.get(key, default))
+        except ValueError:
+            raise ValueError(f'{key} must be an integer') from None
+        if value < minimum:
+            raise ValueError(f'{key} must be at least {minimum}')
+        values[key] = str(value)
+    key = 'CHAMPSIM_STLB_HSP_BF_FALSE_POSITIVE_RATE'
+    try:
+        value = float(os.environ.get(key, '0.01'))
+    except ValueError:
+        raise ValueError(f'{key} must be a number between 0 and 1') from None
+    if not 0 < value < 1:
+        raise ValueError(f'{key} must be strictly between 0 and 1')
+    values[key] = str(value)
+    return values
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--variant', required=True, choices=['hsp4_bf8', 'hsp10_bf4', 'hsp4_bf4'])
@@ -38,6 +60,10 @@ def main():
     widths = WIDTHS[args.variant]
     if args.parallel < 1:
         parser.error('--parallel must be positive')
+    try:
+        bf_environment = bloom_filter_environment()
+    except ValueError as error:
+        parser.error(str(error))
     selected = []
     for value in args.jobs:
         names = list(JOBS) if value == 'all' else [j for j in JOBS if j.startswith(value + '_')] if value in ['sssp', 'pr'] else [value]
@@ -68,7 +94,7 @@ def main():
             parser.error(f'Missing binary for {name}: {binary}')
         commands[name] = ['nice', '-n', '10', 'stdbuf', '-oL', '-eL', str(binary), '--warmup-instructions', '50000000', '--simulation-instructions', str(job['instructions']), '--json', str(output / f'{name}.json.tmp'), str(trace)]
     if args.dry_run:
-        print(json.dumps(dict(output=str(output), parallel=args.parallel, commands=commands, skipped=skipped), indent=2))
+        print(json.dumps(dict(output=str(output), parallel=args.parallel, bf_environment=bf_environment, commands=commands, skipped=skipped), indent=2))
         return 0
     selected = list(commands)
     if not selected:
@@ -78,10 +104,9 @@ def main():
     env = {k:v for k,v in os.environ.items() if not k.startswith('CHAMPSIM_STLB_HSP_')}
     env.update(CHAMPSIM_STLB_HSP_BUFFER_CAPACITY='512', CHAMPSIM_STLB_HSP_NUM_BUFFERS='8',
                CHAMPSIM_STLB_HSP_PROMOTE_THRESHOLD='1', CHAMPSIM_STLB_HSP_HOTNESS_SAT=str(widths['hotness_max']),
-               CHAMPSIM_STLB_HSP_BF_FALSE_POSITIVE_RATE='0.01', CHAMPSIM_STLB_HSP_BF_HASHES='7',
-               CHAMPSIM_STLB_HSP_BF_COUNTERS='4912', CHAMPSIM_STLB_HSP_INTERNAL_LATENCY='1',
-               CHAMPSIM_STLB_HSP_BF_LATENCY='1', CHAMPSIM_STLB_HSP_SEARCH_LATENCY='9')
-    manifest = dict(variant=args.variant, counter_widths=widths, warmup=50000000, shared_mshr_credits=16, jobs={n:JOBS[n] for n in selected}, commands=commands, skipped=skipped,
+               CHAMPSIM_STLB_HSP_INTERNAL_LATENCY='1', CHAMPSIM_STLB_HSP_SEARCH_LATENCY='9')
+    env.update(bf_environment)
+    manifest = dict(variant=args.variant, counter_widths=widths, bf_environment=bf_environment, warmup=50000000, shared_mshr_credits=16, jobs={n:JOBS[n] for n in selected}, commands=commands, skipped=skipped,
                     binary_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (ROOT/'bin').iterdir()})
     (output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
     def run(name):
@@ -91,6 +116,7 @@ def main():
         with (output/f'{name}.log').open('w') as log:
             try:
                 log.write(json.dumps(commands[name])+'\n'); log.flush()
+                log.write('BF environment: ' + json.dumps(bf_environment) + '\n'); log.flush()
                 rc = subprocess.run(commands[name], env=env, stdout=log, stderr=subprocess.STDOUT).returncode
                 if rc == 0:
                     temporary = output/f'{name}.json.tmp'
@@ -105,6 +131,8 @@ def main():
                         assert result['bf_counter_bits'] == widths['bf_bits']
                         assert result['hsp_hotness_counter_bits'] == widths['hsp_bits']
                         assert result['hsp_hotness_saturation'] == widths['hotness_max']
+                        assert result['bf_counters_per_filter'] == int(bf_environment['CHAMPSIM_STLB_HSP_BF_COUNTERS'])
+                        assert result['bf_lookup_latency_cycles'] == int(bf_environment['CHAMPSIM_STLB_HSP_BF_LATENCY'])
                         assert 'bf_counter_saturations' in result and 'bf_false_negatives' in result
                         assert result['hsp_latency_model'] == 'internal'
                         assert result['hsp_lookup_extra_cycles'] == 0
