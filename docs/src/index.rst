@@ -20,6 +20,7 @@ We encourage you to read below to see if ChampSim is right for your research, cl
    Core-model
    Cache-model
    hsp-bf-statistics
+   hsp-counter-widths
    Legacy-modules
 
 ChampSim is commonly used as the basis for academic research.

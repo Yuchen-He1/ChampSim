@@ -38,10 +38,27 @@
 
 #include "page_stat.h"  // ADD: for per-page TLB stats
 
+#ifndef CHAMPSIM_BF_COUNTER_BITS
+#define CHAMPSIM_BF_COUNTER_BITS 8
+#endif
+#ifndef CHAMPSIM_HSP_COUNTER_BITS
+#define CHAMPSIM_HSP_COUNTER_BITS 10
+#endif
+
 namespace
 {
+constexpr unsigned bf_bits = CHAMPSIM_BF_COUNTER_BITS;
+constexpr unsigned hsp_bits = CHAMPSIM_HSP_COUNTER_BITS;
+static_assert(bf_bits >= 1 && bf_bits <= 8, "BF width must be 1..8 bits");
+static_assert(hsp_bits >= 1 && hsp_bits <= 64, "HSP width must be 1..64 bits");
+constexpr uint8_t bf_counter_max = static_cast<uint8_t>(std::numeric_limits<uint8_t>::max() >> (8 - bf_bits));
+constexpr uint64_t hsp_counter_max = std::numeric_limits<uint64_t>::max() >> (64 - hsp_bits);
+uint64_t active_hotness_limit = std::min<uint64_t>(512, hsp_counter_max);
 std::unordered_map<std::string, std::vector<CACHE::hsp_halve_snapshot>> g_hsp_halve_history;
 std::size_t g_active_stlb_victim_capacity = CACHE::default_stlb_victim_capacity();
+bool g_active_hsp_timing = false;
+std::size_t g_active_hsp_bf_latency = 1;
+std::size_t g_active_hsp_search_latency = 0;
 
 uint64_t hsp_bloom_hash(uint64_t value, uint64_t seed)
 {
@@ -99,6 +116,8 @@ CACHE::CACHE(CACHE&& other)
       stlb_promote_hotness_threshold(other.stlb_promote_hotness_threshold), stlb_hotness_saturation(other.stlb_hotness_saturation),
       stlb_last_hotness_reset(other.stlb_last_hotness_reset), stlb_bloom_false_positive_rate(other.stlb_bloom_false_positive_rate),
       stlb_bloom_hash_count(other.stlb_bloom_hash_count), stlb_bloom_counter_count(other.stlb_bloom_counter_count),
+      hsp_timing_enabled(other.hsp_timing_enabled), hsp_bf_latency(other.hsp_bf_latency), hsp_search_latency(other.hsp_search_latency),
+      hsp_pending(std::move(other.hsp_pending)),
       upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)),
       lower_translate(std::move(other.lower_translate)), cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY),
       MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE), HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY),
@@ -154,6 +173,10 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->stlb_bloom_false_positive_rate = other.stlb_bloom_false_positive_rate;
   this->stlb_bloom_hash_count = other.stlb_bloom_hash_count;
   this->stlb_bloom_counter_count = other.stlb_bloom_counter_count;
+  this->hsp_timing_enabled = other.hsp_timing_enabled;
+  this->hsp_bf_latency = other.hsp_bf_latency;
+  this->hsp_search_latency = other.hsp_search_latency;
+  this->hsp_pending = std::move(other.hsp_pending);
   this->is_itlb_cache = other.is_itlb_cache;
   this->is_dtlb_cache = other.is_dtlb_cache;
   this->is_stlb_cache = other.is_stlb_cache;
@@ -271,7 +294,7 @@ uint64_t CACHE::counting_bloom_filter::insert(uint64_t key)
   ++exact_members[key];
   uint64_t saturations = 0;
   for (auto idx : indices(key)) {
-    if (counters[idx] != std::numeric_limits<uint8_t>::max()) {
+    if (counters[idx] != bf_counter_max) {
       ++counters[idx];
     } else {
       ++saturations;
@@ -459,6 +482,120 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
     ++sim_stats.bf_false_positives;
   }
   return false;
+}
+
+bool CACHE::active_hsp_timing() { return g_active_hsp_timing; }
+unsigned CACHE::bf_counter_bits() { return bf_bits; }
+unsigned CACHE::hsp_counter_bits() { return hsp_bits; }
+uint64_t CACHE::hsp_hotness_limit() { return active_hotness_limit; }
+std::size_t CACHE::active_hsp_bf_latency() { return g_active_hsp_bf_latency; }
+std::size_t CACHE::active_hsp_search_latency() { return g_active_hsp_search_latency; }
+
+bool CACHE::enqueue_hsp(const tag_lookup_type& pkt)
+{
+  // An outstanding PTW owns the return. Never send a second HSP response for it.
+  if (std::any_of(MSHR.begin(), MSHR.end(), matches_address(pkt.address)))
+    return handle_miss_to_lower(pkt);
+
+  auto pending = std::find_if(hsp_pending.begin(), hsp_pending.end(), [&](const auto& x) { return matches_address(pkt.address)(x.request); });
+  if (pending != hsp_pending.end()) {
+    auto merged = mshr_type::merge(mshr_type{pending->request, current_time}, mshr_type{pkt, current_time});
+    pending->request.to_return = std::move(merged.to_return);
+    pending->request.instr_depend_on_me = std::move(merged.instr_depend_on_me);
+    pending->request.type = merged.type;
+    pending->request.cpu = merged.cpu;
+    pending->request.instr_id = merged.instr_id;
+    pending->request.ip = merged.ip;
+    pending->waiters.emplace_back(pkt.type, pkt.cpu);
+    sim_stats.mshr_merge.increment(std::pair{pkt.type, pkt.cpu});
+    return true;
+  }
+  // Pending lookups reserve the same finite credits as downstream MSHRs.
+  if (MSHR.size() + hsp_pending.size() >= MSHR_SIZE) {
+    ++sim_stats.hsp_queue_full;
+    return false;
+  }
+  hsp_pending_entry entry{pkt, current_time + (warmup ? champsim::chrono::clock::duration{} : static_cast<int64_t>(hsp_bf_latency) * clock_period)};
+  entry.waiters.emplace_back(pkt.type, pkt.cpu);
+  hsp_pending.push_back(std::move(entry));
+  ++sim_stats.bf_queries;
+  return true;
+}
+
+long CACHE::operate_hsp(champsim::bandwidth& fill_bw)
+{
+  long progress = 0;
+  champsim::bandwidth bf_bw{MAX_TAG}, complete_bw{MAX_TAG};
+  for (auto it = hsp_pending.begin(); it != hsp_pending.end();) {
+    auto& entry = *it;
+    if (entry.ready > current_time) { ++it; continue; }
+    const auto vpn = champsim::page_number{entry.request.v_address}.to<uint64_t>();
+    if (!entry.bf_done) {
+      if (!bf_bw.has_remaining()) { ++it; continue; }
+      bf_bw.consume(1);
+      entry.bf_done = true;
+      // BF and candidate data are sampled atomically at the BF-stage boundary.
+      // Keep a value snapshot so eviction during the search cannot invalidate it.
+      for (std::size_t b = 0; b < stlb_victim_filters.size(); ++b) {
+        if (!stlb_victim_filters[b].query(vpn)) {
+          entry.missed_resident |= stlb_victim_filters[b].contains_exact(vpn);
+          continue;
+        }
+        entry.positive = true;
+        auto& buffer = stlb_victim_caches[b];
+        auto slot = std::find_if(buffer.begin(), buffer.end(), [vpn](const auto& x) {
+          return x.valid && champsim::page_number{x.v_address}.to<uint64_t>() == vpn;
+        });
+        if (!entry.hit && slot != buffer.end()) {
+          entry.hit = true;
+          entry.result = *slot;
+          entry.buffer = b;
+          entry.slot = std::distance(buffer.begin(), slot);
+        }
+      }
+      sim_stats.bf_positive_queries += entry.positive;
+      entry.ready = current_time + (warmup || !entry.positive ? champsim::chrono::clock::duration{} : static_cast<int64_t>(hsp_search_latency) * clock_period);
+      ++progress;
+    }
+    if (entry.ready > current_time || !complete_bw.has_remaining()) { ++it; continue; }
+    if (entry.hit) {
+      if (!fill_bw.has_remaining()) { ++it; continue; }
+      auto& slot = stlb_victim_caches[entry.buffer][entry.slot];
+      // Only promote the sampled entry if it still occupies the sampled slot.
+      if (slot.valid && champsim::page_number{slot.v_address}.to<uint64_t>() == vpn) {
+        stlb_victim_accessed[entry.buffer][entry.slot] = true;
+        slot.hotness = touch_stlb_hotness(entry.request.v_address);
+        maybe_promote_stlb_victim_entry(entry.request, slot, stlb_victim_filters[entry.buffer]);
+      }
+      response_type response{entry.request.address, entry.request.v_address, entry.result.data, entry.result.pf_metadata,
+                             entry.request.instr_depend_on_me};
+      for (auto* ret : entry.request.to_return) ret->push_back(response);
+      for (auto [type, core] : entry.waiters) {
+        page_stats::hsp_hit(core, vpn, false, static_cast<uint64_t>(current_time.time_since_epoch() / clock_period));
+        sim_stats.hits.increment(std::pair{type, core});
+      }
+      ++sim_stats.hsp_timed_hits;
+      fill_bw.consume(1);
+    } else {
+      if (!handle_miss_to_lower(entry.request)) { ++it; continue; }
+      // The forwarding helper counted the representative request; count merged demands too.
+      bool representative = false;
+      for (auto [type, core] : entry.waiters) {
+        if (!representative && type == entry.request.type && core == entry.request.cpu) { representative = true; continue; }
+        sim_stats.misses.increment(std::pair{type, core});
+      }
+      if (entry.missed_resident) {
+        ++sim_stats.bf_false_negatives;
+      } else if (entry.positive) {
+        ++sim_stats.bf_false_positive_queries;
+        ++sim_stats.bf_false_positives;
+      }
+    }
+    complete_bw.consume(1);
+    it = hsp_pending.erase(it);
+    ++progress;
+  }
+  return progress;
 }
 
 bool CACHE::maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, stlb_victim_entry& entry, counting_bloom_filter& filter)
@@ -736,13 +873,19 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
   }
 
   if (is_stlb_cache && stlb_victim_capacity > 0) {
+    if (hsp_timing_enabled && !stlb_victim_caches.empty())
+      return enqueue_hsp(handle_pkt);
     if (stlb_victim_lookup(handle_pkt)) {
       return true;
     }
   }
 
-  mshr_type to_allocate{handle_pkt, current_time};
+  return handle_miss_to_lower(handle_pkt);
+}
 
+bool CACHE::handle_miss_to_lower(const tag_lookup_type& handle_pkt)
+{
+  mshr_type to_allocate{handle_pkt, current_time};
   cpu = handle_pkt.cpu;
 
   auto mshr_pkt = mshr_and_forward_packet(handle_pkt);
@@ -777,6 +920,7 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     }
 
     // Allocate an MSHR
+    if (is_stlb_cache) ++sim_stats.ptw_requests_issued;
     if (mshr_pkt.second.response_requested) {
       MSHR.emplace_back(std::move(mshr_pkt.first));
     }
@@ -866,6 +1010,7 @@ long CACHE::operate()
   }
 
   // Initiate tag checks
+  progress += operate_hsp(fill_bw);
   const champsim::bandwidth::maximum_type bandwidth_from_tag_checks{champsim::to_underlying(MAX_TAG) * (long)(HIT_LATENCY / clock_period)
                                                                     - (long)std::size(inflight_tag_check)};
   champsim::bandwidth initiate_tag_bw{std::clamp(bandwidth_from_tag_checks, champsim::bandwidth::maximum_type{0}, MAX_TAG)};
@@ -924,7 +1069,13 @@ long CACHE::operate()
   auto [tag_check_ready_begin, tag_check_ready_end] =
       champsim::get_span_p(std::begin(inflight_tag_check), std::end(inflight_tag_check), tag_check_bw,
                            [is_ready, is_translated](const auto& pkt) { return is_ready(pkt) && is_translated(pkt); });
-  auto hits_end = std::stable_partition(tag_check_ready_begin, tag_check_ready_end, [this](const auto& pkt) { return this->try_hit(pkt); });
+  auto hits_end = std::stable_partition(tag_check_ready_begin, tag_check_ready_end, [this](auto& pkt) {
+    const bool timed_hsp = is_stlb_cache && hsp_timing_enabled && !stlb_victim_caches.empty();
+    if (timed_hsp && pkt.stlb_miss_checked) return false;
+    const bool hit = this->try_hit(pkt);
+    if (timed_hsp && !hit) pkt.stlb_miss_checked = true;
+    return hit;
+  });
   auto finish_tag_check_end = std::stable_partition(hits_end, tag_check_ready_end, do_handle_miss);
   tag_check_bw.consume(std::distance(tag_check_ready_begin, finish_tag_check_end));
   inflight_tag_check.erase(tag_check_ready_begin, finish_tag_check_end);
@@ -1288,9 +1439,26 @@ void CACHE::initialize()
       stlb_bloom_counter_count = *counters;
     }
 
+    // A binary's compiled width is a hard limit, even if an inherited env
+    // requests the legacy saturation value 512 or unbounded counting (0).
+    if (stlb_hotness_saturation == 0 || stlb_hotness_saturation > hsp_counter_max) {
+      stlb_hotness_saturation = hsp_counter_max;
+    }
+    active_hotness_limit = stlb_hotness_saturation;
+    fmt::print("[{}] Counter widths: bf_bits={} bf_max={} hsp_bits={} hotness_max={}\n",
+               NAME, bf_bits, bf_counter_max, hsp_bits, stlb_hotness_saturation);
     stlb_page_hotness.clear();
     configure_stlb_victim_buffers();
     g_active_stlb_victim_capacity = stlb_victim_capacity;
+    hsp_timing_enabled = read_size_t_env("CHAMPSIM_STLB_HSP_INTERNAL_LATENCY").value_or(1) != 0;
+    hsp_bf_latency = read_size_t_env("CHAMPSIM_STLB_HSP_BF_LATENCY").value_or(1);
+    const auto default_search_latency = stlb_victim_capacity > 1 ? static_cast<std::size_t>(std::ceil(std::log2(stlb_victim_capacity))) : 0;
+    hsp_search_latency = read_size_t_env("CHAMPSIM_STLB_HSP_SEARCH_LATENCY").value_or(default_search_latency);
+    g_active_hsp_timing = hsp_timing_enabled;
+    g_active_hsp_bf_latency = hsp_bf_latency;
+    g_active_hsp_search_latency = hsp_search_latency;
+    fmt::print("[{}] HSP timing: internal={} bf_latency={} search_latency={} parallel_buffers=true shared_mshr_credits={}\n",
+               NAME, hsp_timing_enabled, hsp_bf_latency, hsp_search_latency, MSHR_SIZE);
     sim_stats.bf_counters_per_filter = stlb_bloom_counter_count;
     sim_stats.bf_total_counters = stlb_bloom_counter_count * stlb_victim_filters.size();
     roi_stats.bf_counters_per_filter = sim_stats.bf_counters_per_filter;
@@ -1358,6 +1526,11 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.bf_false_positives = sim_stats.bf_false_positives;
   roi_stats.bf_counter_saturations = sim_stats.bf_counter_saturations;
   roi_stats.bf_false_negatives = sim_stats.bf_false_negatives;
+  roi_stats.bf_positive_queries = sim_stats.bf_positive_queries;
+  roi_stats.bf_false_positive_queries = sim_stats.bf_false_positive_queries;
+  roi_stats.hsp_timed_hits = sim_stats.hsp_timed_hits;
+  roi_stats.hsp_queue_full = sim_stats.hsp_queue_full;
+  roi_stats.ptw_requests_issued = sim_stats.ptw_requests_issued;
   roi_stats.bf_counters_per_filter = sim_stats.bf_counters_per_filter;
   roi_stats.bf_total_counters = sim_stats.bf_total_counters;
 

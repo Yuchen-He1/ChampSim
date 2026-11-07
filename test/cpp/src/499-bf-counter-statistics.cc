@@ -25,7 +25,7 @@ struct bf_environment {
     for (const auto& [key, value] : std::vector<std::pair<std::string, std::string>>{
              {"CHAMPSIM_STLB_HSP_BUFFER_CAPACITY", "512"}, {"CHAMPSIM_STLB_HSP_NUM_BUFFERS", buffers},
              {"CHAMPSIM_STLB_HSP_BF_COUNTERS", "1"}, {"CHAMPSIM_STLB_HSP_BF_HASHES", hashes},
-             {"CHAMPSIM_STLB_HSP_PROMOTE_THRESHOLD", "1"}, {"CHAMPSIM_STLB_HSP_HOTNESS_SAT", "512"}}) {
+             {"CHAMPSIM_STLB_HSP_INTERNAL_LATENCY", "0"}, {"CHAMPSIM_STLB_HSP_PROMOTE_THRESHOLD", "1"}, {"CHAMPSIM_STLB_HSP_HOTNESS_SAT", "512"}}) {
       const auto* previous = std::getenv(key.c_str());
       saved.emplace_back(key, previous ? std::optional<std::string>{previous} : std::nullopt);
       setenv(key.c_str(), value.c_str(), 1);
@@ -97,19 +97,20 @@ TEST_CASE("BF saturation counts clipped updates, not reaching the maximum", "[bf
 {
   bf_environment env;
   bf_rig rig;
-  // The first page stays in STLB; the next 255 fills insert 255 HSP members.
-  for (uint64_t page = 1; page <= 256; ++page) {
+  const uint64_t maximum = (uint64_t{1} << CACHE::bf_counter_bits()) - 1;
+  // The first page stays in STLB; subsequent fills insert HSP members.
+  for (uint64_t page = 1; page <= maximum + 1; ++page) {
     rig.fill(page);
   }
   CHECK(rig.cache.sim_stats.bf_counter_saturations == 0);
-  rig.fill(257);
+  rig.fill(maximum + 2);
   CHECK(rig.cache.sim_stats.bf_counter_saturations == 1);
   CHECK(rig.cache.sim_stats.bf_false_negatives == 0);
   rig.cache.end_phase(0);
   CHECK(rig.cache.roi_stats.bf_counter_saturations == 1);
   rig.cache.begin_phase();
   CHECK(rig.cache.sim_stats.bf_counter_saturations == 0);
-  rig.fill(258);
+  rig.fill(maximum + 3);
   CHECK(rig.cache.sim_stats.bf_counter_saturations == 1);
 }
 
@@ -117,11 +118,12 @@ TEST_CASE("BF saturation counts each clipped hash update", "[bf-statistics]")
 {
   bf_environment env{"7"};
   bf_rig rig;
-  // 37 insertions, seven hashes all aliasing the single counter: 259 updates.
-  for (uint64_t page = 1; page <= 38; ++page) {
+  const uint64_t maximum = (uint64_t{1} << CACHE::bf_counter_bits()) - 1;
+  const uint64_t insertions = maximum / 7 + 1;
+  for (uint64_t page = 1; page <= insertions + 1; ++page) {
     rig.fill(page);
   }
-  CHECK(rig.cache.sim_stats.bf_counter_saturations == 4);
+  CHECK(rig.cache.sim_stats.bf_counter_saturations == insertions * 7 - maximum);
 }
 
 TEST_CASE("BF detects a real false negative after saturation and deletion", "[bf-statistics]")
@@ -129,14 +131,15 @@ TEST_CASE("BF detects a real false negative after saturation and deletion", "[bf
   const auto buffers = GENERATE(1, 2);
   bf_environment env{"1", buffers == 1 ? "1" : "2"};
   bf_rig rig;
-  const auto last_page = static_cast<uint64_t>(256 * buffers + 1);
+  const uint64_t maximum = (uint64_t{1} << CACHE::bf_counter_bits()) - 1;
+  const auto last_page = (maximum + 1) * static_cast<uint64_t>(buffers) + 1;
   for (uint64_t page = 1; page <= last_page; ++page) {
     rig.fill(page);
   }
   REQUIRE(rig.cache.sim_stats.bf_counter_saturations == static_cast<uint64_t>(buffers));
   rig.cache.begin_phase(); // The statistics reset; live HSP/BF membership survives.
   uint64_t stlb_page = last_page;
-  for (uint64_t i = 0; i < 255; ++i) {
+  for (uint64_t i = 0; i < maximum; ++i) {
     const uint64_t page = 1 + i * static_cast<uint64_t>(buffers);
     // Leave a free STLB slot so promotion removes the HSP member without a swap.
     rig.cache.invalidate_entry(champsim::address{stlb_page * 4096});
@@ -148,12 +151,12 @@ TEST_CASE("BF detects a real false negative after saturation and deletion", "[bf
   }
   // One page is still resident in buffer 0, whose clipped count is now zero.
   // With two buffers, buffer 1 is positive but cannot satisfy this lookup.
-  rig.issue(1 + 255 * static_cast<uint64_t>(buffers));
+  rig.issue(1 + maximum * static_cast<uint64_t>(buffers));
   CHECK(rig.upper.returned.empty());
   CHECK(rig.lower.RQ.size() == 1); // Observation must not repair/bypass the BF.
   CHECK(rig.cache.sim_stats.bf_false_negatives == 1);
   CHECK(rig.cache.sim_stats.bf_false_positives == 0);
-  CHECK(rig.cache.sim_stats.bf_queries == 256);
+  CHECK(rig.cache.sim_stats.bf_queries == maximum + 1);
   rig.cache.end_phase(0);
   CHECK(rig.cache.roi_stats.bf_false_negatives == 1);
 }
