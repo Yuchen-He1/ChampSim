@@ -10,13 +10,34 @@ from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parent
+# Historical default ROI lengths below 1B. Preserve the compared instruction
+# ranges rather than padding these inputs to 1B by repeating their traces.
+SHORT_ROIS = {
+    ('bfs', 'kronecker'): 200000000,
+    ('bfs', 'liveJournal'): 731130739,
+    ('bfs', 'orkut'): 737247755,
+    ('bfs', 'wiki'): 133989777,
+    ('bfs', 'road'): 140160397,
+    ('bfs', 'u22'): 400030742,
+    ('bc', 'road'): 344165792,
+    ('cc', 'kronecker'): 400000000,
+    ('cc', 'liveJournal'): 422496632,
+    ('cc', 'orkut'): 256297330,
+    ('cc', 'wiki'): 217016817,
+    ('cc', 'road'): 191051857,
+    ('cc', 'u22'): 707903732,
+    ('sssp', 'wiki'): 924096728,
+    ('sssp', 'road'): 281298430,
+}
 JOBS = {}
-for app in ['sssp', 'pr']:
-    for graph in ['kronecker', 'liveJournal', 'orkut', 'wiki'] + (['u22'] if app == 'pr' else []):
-        trace = f'{app}.champsim.xz' if graph == 'kronecker' else f'{app}_{graph}.champsim.xz'
+for app in ['bfs', 'bc', 'cc', 'pr', 'sssp']:
+    graphs = ['kronecker', 'liveJournal', 'orkut', 'wiki', 'road', 'u22']
+    for graph in graphs:
+        suffix = 'champsimtrace' if app == 'bfs' and graph == 'kronecker' else 'champsim'
+        trace = f'{app}.{suffix}.xz' if graph == 'kronecker' else f'{app}_{graph}.{suffix}.xz'
         if graph == 'u22':
-            trace = 'u22_uniform_trace/u22_pr.champsim'
-        JOBS[f'{app}_{graph}'] = dict(trace=trace, instructions=924096728 if app == 'sssp' and graph == 'wiki' else 1000000000, internal=True)
+            trace = f'u22_{app}.champsim.xz'
+        JOBS[f'{app}_{graph}'] = dict(trace=trace, graph=graph, instructions=SHORT_ROIS.get((app, graph), 1000000000), internal=True)
 WIDTHS = {
     'hsp4_bf8': dict(hsp_bits=4, bf_bits=8, hotness_max=15),
     'hsp10_bf4': dict(hsp_bits=10, bf_bits=4, hotness_max=512),
@@ -53,7 +74,7 @@ def main():
     parser.add_argument('--sssp-trace-root', type=Path, help='SSSP trace directory; overrides --trace-root')
     parser.add_argument('--u22-trace', type=Path, help='Override U22 PR trace; raw or xz')
     parser.add_argument('--parallel', type=int, default=4)
-    parser.add_argument('--jobs', nargs='+', default=['all'], help='all, sssp, pr, or individual job names')
+    parser.add_argument('--jobs', nargs='+', default=['all'], help='all, bfs, bc, cc, pr, sssp, or individual job names')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
@@ -66,7 +87,7 @@ def main():
         parser.error(str(error))
     selected = []
     for value in args.jobs:
-        names = list(JOBS) if value == 'all' else [j for j in JOBS if j.startswith(value + '_')] if value in ['sssp', 'pr'] else [value]
+        names = list(JOBS) if value == 'all' else [j for j in JOBS if j.startswith(value + '_')] if value in ['bfs', 'bc', 'cc', 'pr', 'sssp'] else [value]
         for name in names:
             if name not in JOBS:
                 parser.error('Unknown job: ' + name)
@@ -80,8 +101,11 @@ def main():
         trace_root = (args.pr_trace_root if name.startswith('pr_') else args.sssp_trace_root) or args.trace_root
         if name.startswith('pr_u22') and args.u22_trace:
             candidates = [args.u22_trace]
-        elif name.startswith('pr_u22'):
-            candidates = [trace_root / p for p in ['u22_pr.champsim.xz', 'u22_pr.champsim', job['trace'] + '.xz', job['trace']]]
+        elif job['graph'] == 'u22':
+            filename = job['trace']
+            candidates = [trace_root / filename, trace_root / filename.removesuffix('.xz'),
+                          trace_root / 'u22_uniform_trace' / filename,
+                          trace_root / 'u22_uniform_trace' / filename.removesuffix('.xz')]
         else:
             candidates = [trace_root / job['trace'], trace_root / job['trace'].removesuffix('.xz')]
         trace = next((p for p in candidates if p.is_file()), None)

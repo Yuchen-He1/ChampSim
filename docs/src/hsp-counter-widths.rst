@@ -36,8 +36,18 @@ The runtime script ``scripts/run_hsp_counter_variants.py`` is distributed as
 ``run.py`` next to ``bin/champsim_hsp4_bf8``, ``bin/champsim_hsp10_bf4`` and
 ``bin/champsim_hsp4_bf4``. It requires ``--variant``, accepts separate PR and SSSP
 trace directories, skips missing traces, and validates counter-width metadata.
-It runs four SSSP inputs and five PR inputs; it does not launch default baselines.
-All workloads use 50M warmup and a 1B ROI cap except SSSP Wiki (924,096,728).
+It recognizes 30 trace files: BFS, BC, CC, PR and SSSP each have Kronecker,
+LiveJournal, Orkut, Wiki, road and U22. g23 and TC files are ignored. No default
+baselines are launched. All workloads use 50M warmup, with ROI capped at 1B.
+Historical baseline ROI lengths below 1B are retained in ``SHORT_ROIS``.
+These are compared instruction ranges, not a claim that the file has that many
+records after subtracting warmup.
+
+``--jobs all`` (the default) selects every supported input that exists. Missing
+files are skipped. ``--jobs bfs bc cc`` selects algorithm groups, and
+individual job names can be mixed with groups. ``--parallel`` is an upper limit:
+with 30 available jobs and ``--parallel 30``, all 30 can start together.
+The script does not infer new algorithms from arbitrary filenames.
 
 BF environment configuration
 ----------------------------
