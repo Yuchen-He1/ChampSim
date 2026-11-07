@@ -121,6 +121,10 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
     lines.push_back(fmt::format("cpu{}->{} BF QUERIES: {:10}", cpu, stats.name, stats.bf_queries));
     lines.push_back(fmt::format("cpu{}->{} BF COUNTERS PER FILTER: {:10}", cpu, stats.name, stats.bf_counters_per_filter));
     lines.push_back(fmt::format("cpu{}->{} BF TOTAL COUNTERS: {:10}", cpu, stats.name, stats.bf_total_counters));
+    if (stats.bf_counters_per_filter > 0 || stats.bf_counter_saturations > 0 || stats.bf_false_negatives > 0) {
+      lines.push_back(fmt::format("cpu{}->{} BF COUNTER SATURATIONS: {:10}", cpu, stats.name, stats.bf_counter_saturations));
+      lines.push_back(fmt::format("cpu{}->{} BF FALSE NEGATIVES: {:10}", cpu, stats.name, stats.bf_false_negatives));
+    }
 
     uint64_t total_downstream_demands = total_mshr_return - stats.mshr_return.value_or(std::pair{access_type::PREFETCH, cpu}, mshr_return_value_type{});
     lines.push_back(

@@ -241,6 +241,7 @@ void CACHE::counting_bloom_filter::configure(std::size_t counter_count, std::siz
 {
   hash_count = num_hashes;
   counters.assign(counter_count, 0);
+  exact_members.clear();
 }
 
 std::vector<std::size_t> CACHE::counting_bloom_filter::indices(uint64_t key) const
@@ -265,23 +266,34 @@ bool CACHE::counting_bloom_filter::query(uint64_t key) const
   return !idxs.empty() && std::all_of(idxs.begin(), idxs.end(), [this](auto idx) { return counters[idx] != 0; });
 }
 
-void CACHE::counting_bloom_filter::insert(uint64_t key)
+uint64_t CACHE::counting_bloom_filter::insert(uint64_t key)
 {
+  ++exact_members[key];
+  uint64_t saturations = 0;
   for (auto idx : indices(key)) {
     if (counters[idx] != std::numeric_limits<uint8_t>::max()) {
       ++counters[idx];
+    } else {
+      ++saturations;
     }
   }
+  return saturations;
 }
 
 void CACHE::counting_bloom_filter::erase(uint64_t key)
 {
+  auto member = exact_members.find(key);
+  if (member != exact_members.end() && --member->second == 0) {
+    exact_members.erase(member);
+  }
   for (auto idx : indices(key)) {
     if (counters[idx] != 0) {
       --counters[idx];
     }
   }
 }
+
+bool CACHE::counting_bloom_filter::contains_exact(uint64_t key) const { return exact_members.find(key) != exact_members.end(); }
 
 void CACHE::configure_stlb_victim_buffers()
 {
@@ -406,9 +418,14 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
 
   ++sim_stats.bf_queries;
   bool any_bloom_positive = false;
+  bool missed_resident = false;
   auto vpn = champsim::page_number{handle_pkt.v_address}.to<uint64_t>();
   for (std::size_t buffer_idx = 0; buffer_idx < stlb_victim_caches.size(); ++buffer_idx) {
-    if (buffer_idx >= stlb_victim_filters.size() || !stlb_victim_filters[buffer_idx].query(vpn)) {
+    if (buffer_idx >= stlb_victim_filters.size()) {
+      continue;
+    }
+    if (!stlb_victim_filters[buffer_idx].query(vpn)) {
+      missed_resident |= stlb_victim_filters[buffer_idx].contains_exact(vpn);
       continue;
     }
 
@@ -433,8 +450,12 @@ bool CACHE::stlb_victim_lookup(const tag_lookup_type& handle_pkt)
     }
   }
 
-  // Parallel filters: a true hit in any buffer covers positives elsewhere.
-  if (any_bloom_positive) {
+  // A successful hit above suppresses both system-level FP and FN counts.
+  // If a resident was hidden by a negative BF, this is an FN even when an
+  // unrelated buffer gave a positive. A true FP has no resident translation.
+  if (missed_resident) {
+    ++sim_stats.bf_false_negatives;
+  } else if (any_bloom_positive) {
     ++sim_stats.bf_false_positives;
   }
   return false;
@@ -486,7 +507,7 @@ bool CACHE::maybe_promote_stlb_victim_entry(const tag_lookup_type& handle_pkt, s
       entry.data = evicted_stlb_entry.data;
       entry.pf_metadata = evicted_stlb_entry.pf_metadata;
       entry.hotness = hotness;
-      filter.insert(vpn);
+      sim_stats.bf_counter_saturations += filter.insert(vpn);
     } else {
       // Promote-back keeps global page hot counter, but removes this HSP copy.
       filter.erase(promoted_vpn);
@@ -535,7 +556,7 @@ void CACHE::stlb_victim_insert(const champsim::cache_block& evicted)
   }
 
   *victim_it = stlb_victim_entry{true, evicted.address, evicted.v_address, evicted.data, evicted.pf_metadata, hotness};
-  filter.insert(vpn);
+  sim_stats.bf_counter_saturations += filter.insert(vpn);
 }
 
 template <typename T>
@@ -1335,6 +1356,8 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.pf_fill = sim_stats.pf_fill;
   roi_stats.bf_queries = sim_stats.bf_queries;
   roi_stats.bf_false_positives = sim_stats.bf_false_positives;
+  roi_stats.bf_counter_saturations = sim_stats.bf_counter_saturations;
+  roi_stats.bf_false_negatives = sim_stats.bf_false_negatives;
   roi_stats.bf_counters_per_filter = sim_stats.bf_counters_per_filter;
   roi_stats.bf_total_counters = sim_stats.bf_total_counters;
 

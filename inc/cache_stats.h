@@ -21,6 +21,10 @@ struct cache_stats {
   // HSP (STLB victim) lookup stats
   uint64_t bf_queries = 0;
   uint64_t bf_false_positives = 0;
+  // Increment attempts clipped because a BF counter is already at its maximum.
+  uint64_t bf_counter_saturations = 0;
+  // HSP lookups that miss a resident translation because its BF is negative.
+  uint64_t bf_false_negatives = 0;
   uint64_t bf_counters_per_filter = 0;
   uint64_t bf_total_counters = 0;
 

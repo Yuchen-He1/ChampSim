@@ -195,11 +195,14 @@ private:
 
     void configure(std::size_t counter_count, std::size_t num_hashes);
     bool query(uint64_t key) const;
-    void insert(uint64_t key);
+    [[nodiscard]] uint64_t insert(uint64_t key);
     void erase(uint64_t key);
+    [[nodiscard]] bool contains_exact(uint64_t key) const;
     [[nodiscard]] std::size_t counter_count() const { return counters.size(); }
 
   private:
+    // Statistics-only oracle: never used to answer a translation request.
+    std::unordered_map<uint64_t, std::size_t> exact_members{};
     [[nodiscard]] std::vector<std::size_t> indices(uint64_t key) const;
   };
   std::vector<std::vector<stlb_victim_entry>> stlb_victim_caches{};

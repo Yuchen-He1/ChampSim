@@ -11,6 +11,8 @@ cache_stats operator-(cache_stats lhs, cache_stats rhs)
 
   result.bf_queries = lhs.bf_queries - rhs.bf_queries;
   result.bf_false_positives = lhs.bf_false_positives - rhs.bf_false_positives;
+  result.bf_counter_saturations = lhs.bf_counter_saturations - rhs.bf_counter_saturations;
+  result.bf_false_negatives = lhs.bf_false_negatives - rhs.bf_false_negatives;
   result.bf_counters_per_filter = lhs.bf_counters_per_filter;
   result.bf_total_counters = lhs.bf_total_counters;
 
