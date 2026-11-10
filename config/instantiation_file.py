@@ -83,6 +83,8 @@ cache_builder_parts = {
     'prefetch_activate': '.prefetch_activate({^prefetch_activate_string})',
     '_replacement_data': '.replacement<{^replacement_string}>()',
     '_prefetcher_data': '.prefetcher<{^prefetcher_string}>()',
+    'victima_channel': '.victima_channel(&{^victima_queues})',
+    'victima_l2': '.victima_l2({victima_l2:b})',
     'lower_translate': '.lower_translate(&{^lower_translate_queues})',
     'lower_level': '.lower_level(&{^lower_level_queues})',
     'frequency': '.clock_period(champsim::chrono::picoseconds{{{^clock_period}}})'
@@ -152,6 +154,8 @@ def get_cache_builder(elem, ul_pairs):
         ('virtual_prefetch', False): '.reset_virtual_prefetch()'
     }
 
+    if elem.get('victima_channel') and elem['victima_channel'] in (elem.get('lower_level'), elem.get('name')):
+        raise ValueError('Victima requires a separate STLB-to-L2 channel')
     uppers = (v for v in ul_pairs if v[0] == elem.get('name'))
     local_params = {
         '^defaults': elem.get('_defaults', ''),
@@ -163,6 +167,8 @@ def get_cache_builder(elem, ul_pairs):
     }
     if 'frequency' in elem:
         local_params['^clock_period'] = int(1000000/elem['frequency'])
+    if 'victima_channel' in elem:
+        local_params['^victima_queues'] = f'channels.at({ul_pairs.index((elem["victima_channel"], elem["name"]))})'
     if 'lower_translate' in elem:
         local_params.update({
             '^lower_translate_queues': f'channels.at({ul_pairs.index((elem.get("lower_translate"), elem.get("name")))})'
@@ -273,6 +279,7 @@ def get_upper_levels(cores, caches, ptws):
         map(functools.partial(named_selector, key='lower_level'), ptws),
         map(functools.partial(named_selector, key='lower_level'), caches),
         map(functools.partial(named_selector, key='lower_translate'), caches),
+        map(functools.partial(named_selector, key='victima_channel'), caches),
         map(functools.partial(named_selector, key='L1I'), cores),
         map(functools.partial(named_selector, key='L1D'), cores)
     )))

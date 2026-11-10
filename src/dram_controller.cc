@@ -114,6 +114,7 @@ long DRAM_CHANNEL::operate()
         response_type response{entry->address, entry->v_address, entry->data, entry->pf_metadata, entry->instr_depend_on_me};
         for (auto* ret : entry.value().to_return) {
           ret->push_back(response);
+          ret->back().dram_access = true;
         }
 
         ++progress;
@@ -149,6 +150,7 @@ long DRAM_CHANNEL::finish_dbus_request()
                            active_request->pkt->value().pf_metadata, active_request->pkt->value().instr_depend_on_me};
     for (auto* ret : active_request->pkt->value().to_return) {
       ret->push_back(response);
+          ret->back().dram_access = true;
     }
 
     active_request->valid = false;
@@ -456,6 +458,7 @@ void DRAM_CHANNEL::check_read_collision()
                                rq_it->value().instr_depend_on_me};
         for (auto* ret : rq_it->value().to_return) {
           ret->push_back(response);
+          ret->back().dram_access = true;
         }
 
         rq_it->reset();

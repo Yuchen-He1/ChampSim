@@ -32,12 +32,13 @@ champsim::channel::channel(std::size_t rq_size, std::size_t pq_size, std::size_t
 template <typename Iter, typename F>
 bool do_collision_for(Iter begin, Iter end, champsim::channel::request_type& packet, champsim::data::bits shamt, F&& func)
 {
+  if (packet.translation.op != champsim::translation_op::none) return false;
   // We make sure that both merge packet address have been translated. If
   // not this can happen: package with address virtual and physical X
   // (not translated) is inserted, package with physical address
   // (already translated) X.
   if (auto found =
-          std::find_if(begin, end, [match = packet.address.slice_upper(shamt), shamt](const auto& x) { return x.address.slice_upper(shamt) == match; });
+          std::find_if(begin, end, [&packet, match = packet.address.slice_upper(shamt), shamt](const auto& x) { return x.translation.op == champsim::translation_op::none && x.cpu == packet.cpu && x.asid[0] == packet.asid[0] && x.asid[1] == packet.asid[1] && x.is_translated == packet.is_translated && x.address.slice_upper(shamt) == match; });
       found != end && packet.is_translated == found->is_translated) {
     func(packet, *found);
     return true;
@@ -64,7 +65,8 @@ bool do_collision_for_return(Iter begin, Iter end, champsim::channel::request_ty
 {
   return do_collision_for(begin, end, packet, shamt, [&](champsim::channel::request_type& source, champsim::channel::request_type& destination) {
     if (source.response_requested) {
-      returned.emplace_back(source.address, source.v_address, destination.data, destination.pf_metadata, source.instr_depend_on_me);
+      returned.emplace_back(source);
+      returned.back().data = destination.data; returned.back().pf_metadata = destination.pf_metadata;
     }
   });
 }

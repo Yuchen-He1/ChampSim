@@ -24,6 +24,7 @@
 #include <string_view>
 #include <vector>
 
+#include "translation.h"
 #include "access_type.h"
 #include "address.h"
 #include "champsim.h"
@@ -50,6 +51,7 @@ struct cache_queue_stats {
 class channel
 {
   struct request {
+    translation_message translation{};
     bool forward_checked = false;
     bool is_translated = true;
     bool response_requested = true;
@@ -70,6 +72,10 @@ class channel
   };
 
   struct response {
+    translation_message translation{};
+    bool dram_access = false;
+    uint32_t cpu = 0;
+    std::array<uint8_t, 2> asid{255,255};
     champsim::address address{};
     champsim::address v_address{};
     champsim::address data{};
@@ -80,7 +86,7 @@ class channel
         : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), instr_depend_on_me(deps)
     {
     }
-    explicit response(request req) : response(req.address, req.v_address, req.data, req.pf_metadata, req.instr_depend_on_me) {}
+    explicit response(request req) : response(req.address, req.v_address, req.data, req.pf_metadata, req.instr_depend_on_me) { translation = req.translation; cpu = req.cpu; asid = {req.asid[0], req.asid[1]}; }
   };
 
   template <typename R>

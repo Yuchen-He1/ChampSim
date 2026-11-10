@@ -41,7 +41,7 @@ PageTableWalker::PageTableWalker(champsim::ptw_builder b)
   std::sort(std::begin(local_pscl_dims), std::end(local_pscl_dims), std::greater{});
 
   for (auto [level, sets, ways] : local_pscl_dims) {
-    pscl.emplace_back(sets, ways, pscl_indexer{b.m_vmem->shamt(level)}, pscl_indexer{b.m_vmem->shamt(level)});
+    pscl.emplace_back(sets, ways, pscl_indexer{b.m_vmem->shamt(level)}, pscl_tagger{b.m_vmem->shamt(level)});
   }
 }
 
@@ -49,13 +49,21 @@ PageTableWalker::mshr_type::mshr_type(const request_type& req, std::size_t level
     : address(req.address), v_address(req.v_address), instr_depend_on_me(req.instr_depend_on_me), pf_metadata(req.pf_metadata), cpu(req.cpu),
       translation_level(level)
 {
+  translation = req.translation;
   asid[0] = req.asid[0];
   asid[1] = req.asid[1];
 }
 
 auto PageTableWalker::handle_read(const request_type& handle_pkt, channel_type* ul) -> std::optional<mshr_type>
 {
+  if (MSHR.size() + finished.size() + completed.size() >= MSHR_SIZE) return std::nullopt;
   pscl_entry walk_init = {handle_pkt.v_address, CR3_addr, std::size(pscl)};
+  auto ns = vmem->domain(handle_pkt.cpu, handle_pkt.asid[0], handle_pkt.asid[1]);
+  if (ns != 0) {
+    // Select this address space's root; PSCL tags include the same domain.
+    walk_init.ptw_addr = vmem->get_pte_pa(ns, champsim::page_number{}, vmem->pt_levels).first;
+  }
+  walk_init.domain = ns;
   std::vector<std::optional<pscl_entry>> pscl_hits;
   std::transform(std::begin(pscl), std::end(pscl), std::back_inserter(pscl_hits), [walk_init](auto& x) { return x.check_hit(walk_init); });
   walk_init =
@@ -90,7 +98,7 @@ auto PageTableWalker::handle_fill(const mshr_type& fill_mshr) -> std::optional<m
   }
 
   const auto pscl_idx = std::size(pscl) - fill_mshr.translation_level;
-  pscl.at(pscl_idx).fill({fill_mshr.v_address, *fill_mshr.data, fill_mshr.translation_level});
+  pscl.at(pscl_idx).fill({fill_mshr.v_address, *fill_mshr.data, fill_mshr.translation_level, vmem->domain(fill_mshr.cpu, fill_mshr.asid[0], fill_mshr.asid[1])});
 
   mshr_type fwd_mshr = fill_mshr;
   fwd_mshr.address = *fill_mshr.data;
@@ -137,6 +145,10 @@ long PageTableWalker::operate()
   std::for_each(complete_begin, complete_end, [](auto& mshr_entry) {
     for (auto ret : mshr_entry.to_return) {
       ret->emplace_back(mshr_entry.v_address, mshr_entry.v_address, *mshr_entry.data, mshr_entry.pf_metadata, mshr_entry.instr_depend_on_me);
+      ret->back().dram_access = mshr_entry.dram_access;
+      ret->back().translation = mshr_entry.translation;
+      ret->back().cpu = mshr_entry.cpu;
+      ret->back().asid = {mshr_entry.asid[0], mshr_entry.asid[1]};
     }
   });
   fill_bw.consume(std::distance(complete_begin, complete_end));
@@ -156,6 +168,7 @@ long PageTableWalker::operate()
   champsim::bandwidth tag_bw{MAX_READ};
   for (auto* ul : upper_levels) {
     auto [rq_begin, rq_end] = champsim::get_span_p(std::cbegin(ul->RQ), std::cend(ul->RQ), tag_bw, [&next_steps, ul, this](const auto& pkt) {
+      if (MSHR.size() + finished.size() + completed.size() + next_steps.size() >= MSHR_SIZE) return false;
       auto result = this->handle_read(pkt, ul);
       if (result.has_value()) {
         next_steps.emplace_back(*result);
@@ -183,7 +196,7 @@ long PageTableWalker::operate()
 void PageTableWalker::finish_packet(const response_type& packet)
 {
   auto finish_step = [this](auto mshr_entry) {
-    auto [ppage, penalty] = this->vmem->get_pte_pa(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address}, mshr_entry.translation_level);
+    auto [ppage, penalty] = this->vmem->get_pte_pa(this->vmem->domain(mshr_entry.cpu, mshr_entry.asid[0], mshr_entry.asid[1]), champsim::page_number{mshr_entry.v_address}, mshr_entry.translation_level);
 
     if constexpr (champsim::debug_print) {
       fmt::print("[{}] finish_packet address: {} v_address: {} data: {} translation_level: {} cycle: {} penalty: {}\n", NAME, mshr_entry.address,
@@ -195,7 +208,7 @@ void PageTableWalker::finish_packet(const response_type& packet)
   };
 
   auto finish_last_step = [this](auto mshr_entry) {
-    auto [ppage, penalty] = this->vmem->va_to_pa(mshr_entry.cpu, champsim::page_number{mshr_entry.v_address});
+    auto [ppage, penalty] = this->vmem->va_to_pa(this->vmem->domain(mshr_entry.cpu, mshr_entry.asid[0], mshr_entry.asid[1]), champsim::page_number{mshr_entry.v_address});
 
     if constexpr (champsim::debug_print) {
       fmt::print("[{}] complete_packet address: {} v_address: {} data: {} translation_level: {} clock: {} penalty: {}\n", NAME, mshr_entry.address,
@@ -214,8 +227,13 @@ void PageTableWalker::finish_packet(const response_type& packet)
   };
   auto last_finished = std::partition(std::begin(MSHR), std::end(MSHR), matches_addr);
 
-  std::for_each(std::begin(MSHR), last_finished, [is_last_step, finish_step, finish_last_step](auto& mshr_entry) {
+  std::for_each(std::begin(MSHR), last_finished, [this, &packet, is_last_step, finish_step, finish_last_step](auto& mshr_entry) {
+    mshr_entry.dram_access |= packet.dram_access;
     mshr_entry.data = is_last_step(mshr_entry) ? finish_last_step(mshr_entry) : finish_step(mshr_entry);
+    if (is_last_step(mshr_entry) && mshr_entry.translation.op == champsim::translation_op::walk) {
+      mshr_entry.translation.entries = vmem->cluster(mshr_entry.cpu, mshr_entry.v_address, mshr_entry.asid[0], mshr_entry.asid[1]);
+      mshr_entry.translation.entries.pte_address = mshr_entry.address;
+    }
   });
 
   std::partition_copy(std::begin(MSHR), last_finished, std::back_inserter(completed), std::back_inserter(finished), is_last_step);

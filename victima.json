@@ -1,0 +1,6 @@
+{
+  "executable_name": "champsim_victima",
+  "block_size": 64, "page_size": 4096,
+  "STLB": {"victima_channel": "cpu0_L2C"},
+  "L2C": {"victima_l2": true, "replacement": "srrip"}
+}

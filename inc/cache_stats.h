@@ -11,6 +11,21 @@
 
 struct cache_stats {
   std::string name;
+  uint64_t victima_lookup_hit = 0;
+  uint64_t victima_lookup_miss = 0;
+  uint64_t victima_demand_insert = 0;
+  uint64_t victima_background_insert = 0;
+  uint64_t victima_background_walk = 0;
+  uint64_t victima_merge = 0;
+  uint64_t victima_queue_drop = 0;
+  uint64_t victima_retry = 0;
+  uint64_t victima_stale_result = 0;
+  uint64_t victima_completion = 0;
+  uint64_t victima_data_eviction = 0;
+  uint64_t victima_translation_eviction = 0;
+  uint64_t victima_data_miss = 0;
+  uint64_t victima_occupancy = 0;
+
   // prefetch stats
   uint64_t pf_requested = 0;
   uint64_t pf_issued = 0;

@@ -48,6 +48,10 @@ CACHE::CACHE(CACHE&& other)
 
       pref_module_pimpl(std::move(other.pref_module_pimpl)), repl_module_pimpl(std::move(other.repl_module_pimpl))
 {
+  victima_channel = other.victima_channel; victima_l2 = other.victima_l2;
+  victima_history = std::move(other.victima_history);
+  victima_pending_requests = std::move(other.victima_pending_requests);
+  victima_next_id = other.victima_next_id;
   pref_module_pimpl->bind(this);
   repl_module_pimpl->bind(this);
 }
@@ -88,6 +92,10 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->pref_module_pimpl = std::move(other.pref_module_pimpl);
   this->repl_module_pimpl = std::move(other.repl_module_pimpl);
 
+  victima_channel = other.victima_channel; victima_l2 = other.victima_l2;
+  victima_history = std::move(other.victima_history);
+  victima_pending_requests = std::move(other.victima_pending_requests);
+  victima_next_id = other.victima_next_id;
   pref_module_pimpl->bind(this);
   repl_module_pimpl->bind(this);
 
@@ -98,12 +106,14 @@ CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref
     : address(req.address), v_address(req.v_address), data(req.data), ip(req.ip), instr_id(req.instr_id), pf_metadata(req.pf_metadata), cpu(req.cpu),
       type(req.type), prefetch_from_this(local_pref), skip_fill(skip), is_translated(req.is_translated), instr_depend_on_me(req.instr_depend_on_me)
 {
+  translation=req.translation; asid[0]=req.asid[0]; asid[1]=req.asid[1];
 }
 
 CACHE::mshr_type::mshr_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued)
     : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), cpu(req.cpu), type(req.type),
       prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
 {
+  translation=req.translation; asid[0]=req.asid[0]; asid[1]=req.asid[1];
 }
 
 CACHE::mshr_type CACHE::mshr_type::merge(mshr_type predecessor, mshr_type successor)
@@ -124,6 +134,7 @@ CACHE::mshr_type CACHE::mshr_type::merge(mshr_type predecessor, mshr_type succes
   retval.instr_depend_on_me = merged_instr;
   retval.to_return = merged_return;
   retval.data_promise = predecessor.data_promise;
+  retval.translation = predecessor.translation;
 
   if constexpr (champsim::debug_print) {
     if (successor.type == access_type::PREFETCH) {
@@ -143,6 +154,7 @@ CACHE::mshr_type CACHE::mshr_type::merge(mshr_type predecessor, mshr_type succes
 auto CACHE::fill_block(mshr_type mshr, uint32_t metadata) -> BLOCK
 {
   CACHE::BLOCK to_fill;
+  to_fill.owner=mshr.cpu; to_fill.asid={mshr.asid[0],mshr.asid[1]};
   to_fill.valid = true;
   to_fill.prefetch = mshr.prefetch_from_this;
   to_fill.dirty = (mshr.type == access_type::WRITE);
@@ -176,7 +188,8 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   auto [set_begin, set_end] = get_set_span(fill_mshr.address);
   auto way = std::find_if_not(set_begin, set_end, [](auto x) { return x.valid; });
   if (way == set_end) {
-    way = std::next(set_begin, impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip,
+    if (victima_l2) way = victima_victim(set_begin,set_end,fill_mshr.cpu);
+    else way = std::next(set_begin, impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip,
                                                 fill_mshr.address, fill_mshr.type));
   }
   assert(set_begin <= way);
@@ -191,7 +204,7 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
                (fill_mshr.time_enqueued.time_since_epoch()) / clock_period, (current_time.time_since_epoch()) / clock_period);
   }
 
-  if (way != set_end && way->valid && way->dirty) {
+  if (way != set_end && way->valid && !way->translation && way->dirty) {
     request_type writeback_packet;
 
     writeback_packet.cpu = fill_mshr.cpu;
@@ -233,7 +246,10 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
       ++sim_stats.pf_fill;
     }
 
+    if (way->valid && victima_channel) victima_evict(*way);
+    if (way->valid && way->translation) { --sim_stats.victima_occupancy; ++sim_stats.victima_translation_eviction; }
     *way = fill_block(fill_mshr, metadata_thru);
+    if (victima_l2) way->rrpv = 3;
   }
 
   // COLLECT STATS
@@ -242,6 +258,7 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
   response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me};
+  response.cpu=fill_mshr.cpu; response.asid={fill_mshr.asid[0],fill_mshr.asid[1]}; response.dram_access=fill_mshr.data_promise->dram_access;
   for (auto* ret : fill_mshr.to_return) {
     ret->push_back(response);
   }
@@ -252,10 +269,10 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
 bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 {
   cpu = handle_pkt.cpu;
-  
+  if (handle_pkt.translation.op != champsim::translation_op::none) return victima_access(handle_pkt);
   // access cache
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);
-  auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
+  auto way = std::find_if(set_begin, set_end, [this, &handle_pkt, matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && !x.translation && matcher(x) && (OFFSET_BITS != champsim::data::bits{12} || (x.owner == handle_pkt.cpu && x.asid == std::array<uint8_t,2>{handle_pkt.asid[0],handle_pkt.asid[1]})); });
   const auto hit = (way != set_end);
   const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);
 
@@ -292,6 +309,8 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
     response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
+    response.cpu=handle_pkt.cpu; response.asid={handle_pkt.asid[0],handle_pkt.asid[1]};
+    if (victima_l2 && way->rrpv) --way->rrpv;
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }
@@ -334,6 +353,8 @@ auto CACHE::mshr_and_forward_packet(const tag_lookup_type& handle_pkt) -> std::p
 
 bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
 {
+  if (handle_pkt.translation.op != champsim::translation_op::none) return false;
+  if (victima_channel) return victima_start(handle_pkt);
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} type: {} local_prefetch: {} cycle: {}\n", NAME, __func__, handle_pkt.instr_id,
                handle_pkt.address, handle_pkt.v_address, access_type_names.at(champsim::to_underlying(handle_pkt.type)), handle_pkt.prefetch_from_this,
@@ -347,7 +368,7 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
   auto mshr_pkt = mshr_and_forward_packet(handle_pkt);
 
   // check mshr
-  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(handle_pkt.address));
+  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), [this,&handle_pkt](const auto& m){ return matches_address(handle_pkt.address)(m) && (OFFSET_BITS != champsim::data::bits{12} || (m.cpu == handle_pkt.cpu && m.asid[0] == handle_pkt.asid[0] && m.asid[1] == handle_pkt.asid[1])); });
   bool mshr_full = (MSHR.size() == MSHR_SIZE);
 
   if (mshr_entry != MSHR.end()) // miss already inflight
@@ -381,6 +402,7 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     }
   }
 
+  if (victima_l2 && handle_pkt.type != access_type::TRANSLATION && handle_pkt.type != access_type::PREFETCH) { ++sim_stats.victima_data_miss; ++champsim::victima_data_misses[handle_pkt.cpu]; }
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
   return true;
@@ -398,6 +420,7 @@ bool CACHE::handle_write(const tag_lookup_type& handle_pkt)
   to_allocate.data_promise.ready_at(current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY));
   inflight_writes.push_back(to_allocate);
 
+  if (victima_l2 && handle_pkt.type != access_type::TRANSLATION && handle_pkt.type != access_type::PREFETCH) { ++sim_stats.victima_data_miss; ++champsim::victima_data_misses[handle_pkt.cpu]; }
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
   return true;
@@ -430,6 +453,7 @@ auto CACHE::initiate_tag_check(champsim::channel* ul)
 long CACHE::operate()
 {
   long progress{0};
+  if (victima_channel) victima_tick();
 
   auto is_ready = [time = current_time](const auto& entry) {
     return entry.event_cycle <= time;
@@ -464,6 +488,7 @@ long CACHE::operate()
     q.get().erase(fill_begin, complete_end);
   }
 
+  victima_fill_budget = fill_bw.amount_remaining();
   // Initiate tag checks
   const champsim::bandwidth::maximum_type bandwidth_from_tag_checks{champsim::to_underlying(MAX_TAG) * (long)(HIT_LATENCY / clock_period)
                                                                     - (long)std::size(inflight_tag_check)};
@@ -579,7 +604,7 @@ uint64_t CACHE::get_way(uint64_t address, uint64_t /*unused set index*/) const
 long CACHE::invalidate_entry(champsim::address inval_addr)
 {
   auto [begin, end] = get_set_span(inval_addr);
-  auto inv_way = std::find_if(begin, end, matches_address(inval_addr));
+  auto inv_way = std::find_if(begin, end, [this,inval_addr](const auto& b){ return !b.translation && matches_address(inval_addr)(b); });
 
   if (inv_way != end) {
     inv_way->valid = false;
@@ -624,8 +649,9 @@ bool CACHE::prefetch_line(uint64_t /*deprecated*/, uint64_t /*deprecated*/, uint
 
 void CACHE::finish_packet(const response_type& packet)
 {
+  if (victima_channel && packet.translation.op != champsim::translation_op::none) { victima_receive(packet); return; }
   // check MSHR information
-  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(packet.address));
+  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), [this,&packet](const auto& m){ return matches_address(packet.address)(m) && (OFFSET_BITS != champsim::data::bits{12} || (m.cpu == packet.cpu && m.asid[0] == packet.asid[0] && m.asid[1] == packet.asid[1])); });
   auto first_unreturned = std::find_if(MSHR.begin(), MSHR.end(), [](auto x) { return x.data_promise.has_unknown_readiness(); });
 
   // sanity check
@@ -635,7 +661,7 @@ void CACHE::finish_packet(const response_type& packet)
   }
 
   // MSHR holds the most updated information about this request
-  mshr_type::returned_value finished_value{packet.data, packet.pf_metadata};
+  mshr_type::returned_value finished_value{packet.data, packet.pf_metadata, packet.dram_access};
   mshr_entry->data_promise = champsim::waitable{finished_value, current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY)};
   if constexpr (champsim::debug_print) {
     fmt::print("[{}_MSHR] finish_packet instr_id: {} address: {} data: {} type: {} current: {}\n", this->NAME, mshr_entry->instr_id, mshr_entry->address,
@@ -649,8 +675,8 @@ void CACHE::finish_packet(const response_type& packet)
 
 void CACHE::finish_translation(const response_type& packet)
 {
-  auto matches_vpage = [page_num = champsim::page_number{packet.v_address}](const auto& entry) {
-    return (champsim::page_number{entry.v_address} == page_num) && !entry.is_translated;
+  auto matches_vpage = [&packet, page_num = champsim::page_number{packet.v_address}](const auto& entry) {
+    return (champsim::page_number{entry.v_address} == page_num) && !entry.is_translated && entry.cpu == packet.cpu && entry.asid[0] == packet.asid[0] && entry.asid[1] == packet.asid[1];
   };
   auto mark_translated = [p_page = champsim::page_number{packet.data}, this](auto& entry) {
     [[maybe_unused]] auto old_address = entry.address;
@@ -854,6 +880,10 @@ void CACHE::impl_replacement_final_stats() const { repl_module_pimpl->impl_repla
 
 void CACHE::initialize()
 {
+  if ((victima_channel || victima_l2) && (PAGE_SIZE != 4096 || BLOCK_SIZE != 64))
+    throw std::invalid_argument("Victima requires 4KB pages and 64B lines");
+  if ((victima_channel && OFFSET_BITS != champsim::data::bits{12}) || (victima_l2 && OFFSET_BITS != champsim::data::bits{6}))
+    throw std::invalid_argument("Victima requires STLB page indexing and L2 line indexing");
   impl_prefetcher_initialize();
   impl_initialize_replacement();
 }
@@ -868,6 +898,7 @@ void CACHE::begin_phase()
 
   roi_stats = new_roi_stats;
   sim_stats = new_sim_stats;
+  sim_stats.victima_occupancy = std::count_if(block.begin(),block.end(),[](const auto& b){return b.valid && b.translation;});
   //count only roi no warmup
   page_stats::clear();
   
@@ -882,6 +913,21 @@ void CACHE::begin_phase()
 void CACHE::end_phase(unsigned finished_cpu)
 {
   finished_cpu = finished_cpu;
+  roi_stats.victima_lookup_hit = sim_stats.victima_lookup_hit;
+  roi_stats.victima_lookup_miss = sim_stats.victima_lookup_miss;
+  roi_stats.victima_demand_insert = sim_stats.victima_demand_insert;
+  roi_stats.victima_background_insert = sim_stats.victima_background_insert;
+  roi_stats.victima_background_walk = sim_stats.victima_background_walk;
+  roi_stats.victima_merge = sim_stats.victima_merge;
+  roi_stats.victima_queue_drop = sim_stats.victima_queue_drop;
+  roi_stats.victima_retry = sim_stats.victima_retry;
+  roi_stats.victima_stale_result = sim_stats.victima_stale_result;
+  roi_stats.victima_completion = sim_stats.victima_completion;
+  roi_stats.victima_data_eviction = sim_stats.victima_data_eviction;
+  roi_stats.victima_translation_eviction = sim_stats.victima_translation_eviction;
+  roi_stats.victima_data_miss = sim_stats.victima_data_miss;
+  roi_stats.victima_occupancy = sim_stats.victima_occupancy;
+
   roi_stats.total_miss_latency_cycles = sim_stats.total_miss_latency_cycles;
 
   roi_stats.hits = sim_stats.hits;

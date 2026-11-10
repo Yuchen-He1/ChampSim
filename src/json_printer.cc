@@ -46,6 +46,20 @@ void to_json(nlohmann::json& j, const CACHE::stats_type& stats)
   for (std::size_t cpu = 0; cpu < NUM_CPUS; ++cpu)
     total_downstream_demands -= stats.mshr_return.value_or(std::pair{access_type::PREFETCH, cpu}, mshr_return_value_type{});
 
+  statsmap.emplace("victima lookup_hit", stats.victima_lookup_hit);
+  statsmap.emplace("victima lookup_miss", stats.victima_lookup_miss);
+  statsmap.emplace("victima demand_insert", stats.victima_demand_insert);
+  statsmap.emplace("victima background_insert", stats.victima_background_insert);
+  statsmap.emplace("victima background_walk", stats.victima_background_walk);
+  statsmap.emplace("victima merge", stats.victima_merge);
+  statsmap.emplace("victima queue_drop", stats.victima_queue_drop);
+  statsmap.emplace("victima retry", stats.victima_retry);
+  statsmap.emplace("victima stale_result", stats.victima_stale_result);
+  statsmap.emplace("victima completion", stats.victima_completion);
+  statsmap.emplace("victima data_eviction", stats.victima_data_eviction);
+  statsmap.emplace("victima translation_eviction", stats.victima_translation_eviction);
+  statsmap.emplace("victima data_miss", stats.victima_data_miss);
+  statsmap.emplace("victima occupancy", stats.victima_occupancy);
   statsmap.emplace("miss latency", std::ceil(stats.total_miss_latency_cycles) / std::ceil(total_downstream_demands));
   for (const auto type : {access_type::LOAD, access_type::RFO, access_type::PREFETCH, access_type::WRITE, access_type::TRANSLATION}) {
     std::vector<hits_value_type> hits;

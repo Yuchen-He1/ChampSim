@@ -154,3 +154,30 @@ std::pair<champsim::address, champsim::chrono::clock::duration> VirtualMemory::g
 
   return {paddr, penalty};
 }
+
+uint32_t VirtualMemory::domain(uint32_t cpu, uint8_t a, uint8_t b)
+{
+  if (a == 255 && b == 255) return cpu;
+  auto key = std::tuple{cpu,a,b};
+  auto it = domains.find(key);
+  if (it != domains.end()) return it->second;
+  auto id = uint32_t(0x80000000u + domains.size());
+  domains.emplace(key,id);
+  return id;
+}
+champsim::translation_block VirtualMemory::cluster(uint32_t cpu, champsim::address va, uint8_t a, uint8_t b) const
+{
+  champsim::translation_block result;
+  result.cpu = cpu; result.asid = {a,b}; result.cluster = va.to<uint64_t>() >> 15;
+  uint32_t ns = cpu;
+  if (a != 255 || b != 255) {
+    auto it = domains.find({cpu,a,b});
+    if (it == domains.end()) return result;
+    ns = it->second;
+  }
+  for (unsigned i=0; i<8; ++i) {
+    auto it = vpage_to_ppage_map.find({ns, champsim::page_number{(result.cluster << 3) + i}});
+    if (it != vpage_to_ppage_map.end()) { result.valid[i] = true; result.ppn[i] = champsim::address{it->second}; }
+  }
+  return result;
+}

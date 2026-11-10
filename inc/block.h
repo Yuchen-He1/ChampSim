@@ -18,10 +18,16 @@
 #define BLOCK_H
 
 #include "champsim.h"
+#include "translation.h"
 
 namespace champsim
 {
 struct cache_block {
+  bool translation = false;
+  translation_block translations{};
+  uint8_t rrpv = 2;
+  uint32_t owner = 0;
+  std::array<uint8_t, 2> asid{255,255};
   bool valid = false;
   bool prefetch = false;
   bool dirty = false;

@@ -38,6 +38,7 @@ class PageTableWalker : public champsim::operable
     champsim::address vaddr;
     champsim::address ptw_addr;
     std::size_t level;
+    uint32_t domain = 0;
   };
 
   struct pscl_indexer {
@@ -45,12 +46,18 @@ class PageTableWalker : public champsim::operable
     auto operator()(const pscl_entry& entry) const { return entry.vaddr.slice_upper(shamt); }
   };
 
-  using pscl_type = champsim::lru_table<pscl_entry, pscl_indexer, pscl_indexer>;
+  struct pscl_tagger {
+    champsim::data::bits shamt;
+    auto operator()(const pscl_entry& e) const { return std::pair{e.domain,e.vaddr.slice_upper(shamt)}; }
+  };
+  using pscl_type = champsim::lru_table<pscl_entry, pscl_indexer, pscl_tagger>;
   using channel_type = champsim::channel;
   using request_type = typename channel_type::request_type;
   using response_type = typename channel_type::response_type;
 
   struct mshr_type {
+    champsim::translation_message translation{};
+    bool dram_access = false;
     champsim::address address{};
     champsim::address v_address{};
     champsim::waitable<champsim::address> data{};

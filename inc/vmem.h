@@ -23,6 +23,7 @@
 #include <optional>
 #include <random>
 
+#include "translation.h"
 #include "address.h"
 #include "champsim.h"
 #include "chrono.h"
@@ -39,7 +40,10 @@ private:
   std::optional<uint64_t> randomization_seed;
   MEMORY_CONTROLLER& dram;
 
+  std::map<std::tuple<uint32_t,uint8_t,uint8_t>, uint32_t> domains;
 public:
+  uint32_t domain(uint32_t cpu, uint8_t a, uint8_t b);
+  champsim::translation_block cluster(uint32_t cpu, champsim::address va, uint8_t a, uint8_t b) const;
   const champsim::chrono::clock::duration minor_fault_penalty;
   const std::size_t pt_levels;
   const pte_entry pte_page_size; // Size of a PTE page

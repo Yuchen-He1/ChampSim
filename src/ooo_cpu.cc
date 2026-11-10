@@ -725,6 +725,7 @@ long O3_CPU::retire_rob()
 
   auto retire_count = std::distance(retire_begin, retire_end);
   num_retired += retire_count;
+  champsim::victima_retired[cpu] += retire_count;
   ROB.erase(retire_begin, retire_end);
 
   return retire_count;

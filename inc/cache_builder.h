@@ -62,6 +62,8 @@ struct cache_builder_base {
   std::vector<champsim::channel*> m_uls{};
   champsim::channel* m_ll{};
   champsim::channel* m_lt{nullptr};
+  champsim::channel* m_victima{nullptr};
+  bool m_victima_l2 = false;
 };
 } // namespace detail
 
@@ -232,6 +234,8 @@ public:
    * Specify the translator (TLB) for this cache.
    */
   self_type& lower_translate(champsim::channel* lt_);
+  self_type& victima_channel(champsim::channel* c) { m_victima = c; return *this; }
+  self_type& victima_l2(bool enabled) { m_victima_l2 = enabled; return *this; }
 
   /**
    * Specify the cache prefetcher.
